@@ -7,4 +7,4 @@
 登入、群組金鑰及附件處理也參考該版本的 `pkg/connector`，並移除 Matrix 服務依賴。
 GTK 與 PyGObject 使用發行版提供的套件。Go 模組的其他相依來源列於 `core/go.mod`。
 
-`index.html` 是原先的互動設計參考。`desktop` 使用 GTK 原生元件重新實作，沒有嵌入網頁。
+`index.html` 是原先的互動設計參考。`desktop` 使用 GTK 原生元件重新實作，沒有嵌入網頁；`desktop/art.py` 的圖示、人物、風景與小熊貼圖是從 `index.html` 移植的原創 SVG。

@@ -1,6 +1,6 @@
 # LINE for Linux · GTK 4 預覽版
 
-這是以 `index.html` 為視覺參考的原生 GTK 4 用戶端，目標為 Ubuntu 24.04 與 Debian 12 以上。Go 核心直接重用 [beeper/line](https://github.com/beeper/line) 的 LINE 通訊與加密套件，不需要 Matrix 伺服器，也沒有嵌入瀏覽器。
+這是以 `index.html` 為視覺參考的原生 GTK 4 用戶端，目標為 Ubuntu 24.04 與 Debian 12 以上。介面逐一對照 `index.html` 的版面、配色、圖示與插畫：標題列、左側導覽、聊天列表、對話、輸入列、聊天室資訊，以及貼圖、設定、說明等視窗。Go 核心直接重用 [beeper/line](https://github.com/beeper/line) 的 LINE 通訊與加密套件，不需要 Matrix 伺服器，也沒有嵌入瀏覽器。
 
 目前是可啟動、可測試的預覽版。已驗證 Linux 介面、核心邏輯與真實 QR 挑戰的產生及取消。**尚未使用真實帳號完成登入、收發及檔案互通驗證。** 各功能的邊界與驗證結果見 [功能狀態](docs/STATUS.md)。
 
@@ -24,7 +24,7 @@ LINE 的 Letter Sealing 必須可用。目前文字與檔案傳送不會退回�
 ./line-app --demo
 ```
 
-展示模式不連線到 LINE。聊天、貼圖及檔案操作只會改變本次示範資料；本機筆記會保存在這台電腦。畫面頂端會持續標示「離線展示」。
+展示模式不連線到 LINE，內容與 `index.html` 相同，可直接比對兩者的畫面。聊天、貼圖、檔案、置頂與 Keep 筆記只會改變本次示範資料；記事會保存在這台電腦。標題列會持續標示「離線展示」。
 
 ## 使用已包好的版本
 
@@ -54,7 +54,17 @@ cd matrix-line
 
 自動安裝使用 `apt-get`，套件清單在 [setup-debian.sh](scripts/setup-debian.sh)。程式使用 `/usr/bin/python3`，不需要 `pip` 或虛擬環境。
 
-登入資料交給 Secret Service 系統鑰匙圈保存。若鑰匙圈不可用，程式只保留本次登入，並在狀態與設定中說明。密碼不會儲存。本機筆記保存在 `$XDG_DATA_HOME/matrix-line/notes`，預設為 `~/.local/share/matrix-line/notes`。
+登入資料交給 Secret Service 系統鑰匙圈保存。若鑰匙圈不可用，程式只保留本次登入，並在狀態與設定中說明。密碼不會儲存。
+
+以下資料只保存在這台電腦，不會同步到 LINE，檔案權限為僅限本人讀寫：
+
+| 資料 | 位置（預設 `~/.local/share/matrix-line`） |
+| --- | --- |
+| 聊天室記事 | `notes/` |
+| Keep 筆記 | `keep/` |
+| 置頂、靜音、我的最愛、Enter 傳送、文字大小、通知 | `preferences/` |
+
+`XDG_DATA_HOME` 有設定時改用 `$XDG_DATA_HOME/matrix-line`。
 
 ## 開發與驗證
 
@@ -66,7 +76,7 @@ python3 scripts/check-core.py .build/line-core-linux-arm64
 scripts/gui-smoke.sh
 ```
 
-GUI 自動檢查需要 `xvfb xauth dbus-x11 imagemagick`。可使用 [test.Dockerfile](scripts/test.Dockerfile) 建立 Linux 測試環境。`scripts/check-core.py` 的 `--live-qr` 選項會連線至 LINE 建立並取消 QR 挑戰，請只在沒有已儲存帳號的隔離環境使用。
+GUI 自動檢查需要 `xvfb xauth dbus-x11 imagemagick`，會在離線展示中實際操作 GTK 元件：傳送、草稿、記事、Keep 筆記、篩選、搜尋、好友、貼圖、檔案佇列，以及登出後舊視窗不能再操作。可使用 [test.Dockerfile](scripts/test.Dockerfile) 建立 Linux 測試環境。`scripts/check-core.py` 的 `--live-qr` 選項會連線至 LINE 建立並取消 QR 挑戰，請只在沒有已儲存帳號的隔離環境使用。
 
 在 Linux 建立包含核心的套件：
 

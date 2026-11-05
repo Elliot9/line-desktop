@@ -31,6 +31,23 @@ func chatKind(id string) string {
 	}
 	return "direct"
 }
+// groupMembers lists up to maxListedMembers member IDs in a stable order so the
+// UI can draw member avatars without inflating every snapshot.
+const maxListedMembers = 24
+
+func groupMembers(mids line.FlexibleMidMap) []string {
+	members := make([]string, 0, len(mids))
+	for mid := range mids {
+		if validMID(mid) {
+			members = append(members, mid)
+		}
+	}
+	sort.Strings(members)
+	if len(members) > maxListedMembers {
+		members = members[:maxListedMembers]
+	}
+	return members
+}
 func (b *backend) personName(id string) string {
 	if b.data.Profile != nil && id == b.data.Profile.ID {
 		return b.data.Profile.Name
@@ -94,6 +111,7 @@ func (b *backend) refreshSnapshot() error {
 			}
 			if g.Extra.GroupExtra != nil {
 				row.MemberCount = len(g.Extra.GroupExtra.MemberMids)
+				row.Members = groupMembers(g.Extra.GroupExtra.MemberMids)
 			}
 			chats[row.ID] = row
 		}

@@ -365,6 +365,11 @@ func (b *backend) validChat(id string) bool {
 				return true
 			}
 		}
+		for _, c := range b.data.Contacts {
+			if c.ID == id {
+				return true
+			}
+		}
 		return false
 	}
 	return validMID(id)
