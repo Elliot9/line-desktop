@@ -1552,7 +1552,7 @@ class Application(Gtk.Application):
         refresh.set_sensitive(self.state.session == "ready")
         controls.append(refresh)
         self.logout_button = button(None, lambda: (self.close_modal(), self.logout()), "secondary danger", text="登出")
-        self.logout_button.set_sensitive(self.state.session != "logged_out")
+        self.logout_button.set_sensitive(self.state.session != "logged_out" and self.state.mode != "demo")
         controls.append(self.logout_button)
         account.append(controls)
         body.append(account)
@@ -2141,6 +2141,8 @@ class Application(Gtk.Application):
             self.prefs.load(account, demo)
         if self.keep.account != account:
             self.keep.load(account, demo)
+            self.state.messages.pop(KEEP_ID, None)
+        if KEEP_ID not in self.state.messages:
             self.state.messages[KEEP_ID] = self.keep.messages()
         self.state.chats[KEEP_ID] = self.keep.chat()
 
@@ -2198,10 +2200,10 @@ class Application(Gtk.Application):
             if self.state.session == "logged_out":
                 return
             message = data.get("message", {})
-            if not self.state.add_message(message):
-                return
+            added = self.state.add_message(message)
             chat_id = str(message.get("chat_id", ""))
-            self.notify(message)
+            if added:
+                self.notify(message)
             if chat_id == self.state.selected:
                 self.after_message(chat_id)
                 self.mark_read()

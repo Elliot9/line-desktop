@@ -7,10 +7,10 @@ flowchart LR
     A[GTK 4 / Python] <-->|私人 stdin / stdout JSON| B[Go 通訊核心]
     B <-->|登入 / RPC / SSE / OBS| C[LINE]
     B <--> D[Linux Secret Service]
-    A --> E[本機筆記]
+    A --> E[本機記事 / Keep 筆記 / 偏好設定]
 ```
 
-`desktop/app.py` 建立原生 GTK 元件，`desktop/model.py` 管理畫面資料與本機筆記。`desktop/ipc.py` 在背景執行緒讀寫通訊管道，再由 GLib 主執行緒更新畫面。桌面程式使用 `Gtk.Application`，正式模式與示範模式各自只有一個實例。
+`desktop/app.py` 建立原生 GTK 元件，結構與 `index.html` 的 DOM 一一對應；`desktop/assets/style.css` 是限定在程式視窗內的 CSS 轉寫，原生檔案對話框維持系統外觀。`desktop/art.py` 移植 `index.html` 的 SVG 圖示、人物、風景與小熊貼圖，經 GdkPixbuf 繪製並依 CSS 顏色著色；`desktop/ui.py` 提供對應 HTML 元素的小型建構函式。`desktop/model.py` 管理畫面資料，以及只存在本機的記事、Keep 筆記與偏好設定。`desktop/ipc.py` 在背景執行緒讀寫通訊管道，再由 GLib 主執行緒更新畫面。桌面程式使用 `Gtk.Application`，正式模式與示範模式各自只有一個實例。
 
 `core/main.go` 以單一事件迴圈持有登入、金鑰與訊息狀態。登入與 SSE 在可取消的背景工作執行，結果帶有工作階段編號，已取消的工作不能還原舊帳號。UI 的附件視窗也會在登出時關閉，並拒絕舊工作階段的回呼。
 
