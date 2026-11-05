@@ -72,3 +72,28 @@ func TestDebugRedactsTokensAndMIDs(t *testing.T) {
 		t.Fatal("debug lines must be truncated")
 	}
 }
+
+func TestAccountProblemDiagnosis(t *testing.T) {
+	mid := "u8ae764e8e69e6bd4ecdd9b6ea0c40fce"
+	if problem := accountProblem(&line.Profile{Mid: mid}, mid); problem != "" {
+		t.Fatalf("matching account rejected: %s", problem)
+	}
+	profile := &line.Profile{}
+	if problem := accountProblem(profile, mid); problem != "" || profile.Mid != mid {
+		t.Fatalf("empty profile MID should fall back to the login MID: %q", problem)
+	}
+	if problem := accountProblem(&line.Profile{Mid: "u8AE764E8E69E6BD4ECDD9B6EA0C40FCE"}, ""); problem != "" {
+		t.Fatalf("uppercase hex MID rejected: %s", problem)
+	}
+	other := "uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6"
+	problem := accountProblem(&line.Profile{Mid: mid}, other)
+	if !strings.HasPrefix(problem, "mid-mismatch") || strings.Contains(problem, mid) || strings.Contains(problem, other) {
+		t.Fatalf("mismatch must be reported without MID values: %q", problem)
+	}
+	if problem := accountProblem(&line.Profile{Mid: "u-short"}, ""); problem != `profile-mid-format len=7 prefix="u" chars=other` {
+		t.Fatalf("unexpected format diagnosis: %q", problem)
+	}
+	if accountProblem(nil, mid) != "profile-missing" || accountProblem(&line.Profile{}, "") != "profile-mid-empty, login empty" {
+		t.Fatal("missing profile data must be diagnosed")
+	}
+}

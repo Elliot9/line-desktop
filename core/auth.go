@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -261,14 +262,15 @@ func performLogin(ctx context.Context, method, email, password string, previous 
 		return failed("token issue", fail("login_failed", "LINE 登入未完成，請重試。"))
 	}
 	loggedIn := apiClient(ctx, token)
+	loggedIn.LoginAttempt = result.Attempt
 	profile, err := loggedIn.GetProfileContext(ctx)
 	if err != nil {
 		return failed("profile", err)
 	}
-	if profile == nil || !validMID(profile.Mid) || (result.Mid != "" && result.Mid != profile.Mid) {
-		return failed("profile", fail("account_mismatch", "LINE 登入資料不一致，請重新登入。"))
+	if problem := accountProblem(profile, result.Mid); problem != "" {
+		return failed("profile", fail("account_mismatch", "LINE 登入資料不一致，請重新登入。（診斷："+problem+"）"))
 	}
-	debugf("login: profile loaded")
+	debugf("login: profile loaded (%s)", midShape(profile.Mid))
 	keys, err := exportLoginKeys(result, loggedIn)
 	if err != nil {
 		debugf("login: Letter Sealing key export error: %v", err)
@@ -298,6 +300,50 @@ func performLogin(ctx context.Context, method, email, password string, previous 
 	}
 	return loginOutcome{session: s, profile: profile}
 }
+// accountProblem checks that the verified profile and the login response name
+// the same account. When the profile omits its MID, the login response's MID
+// is used. The returned diagnosis describes MID shapes, never MID values.
+func accountProblem(profile *line.Profile, resultMID string) string {
+	if profile == nil {
+		return "profile-missing"
+	}
+	if profile.Mid == "" && validMID(resultMID) {
+		debugf("login: profile has no MID, using login response MID (%s)", midShape(resultMID))
+		profile.Mid = resultMID
+	}
+	if profile.Mid == "" {
+		return "profile-mid-empty, login " + midShape(resultMID)
+	}
+	if !validMID(profile.Mid) {
+		return "profile-mid-format " + midShape(profile.Mid)
+	}
+	if resultMID != "" && resultMID != profile.Mid {
+		return "mid-mismatch login " + midShape(resultMID) + " / profile " + midShape(profile.Mid)
+	}
+	return ""
+}
+
+func midShape(mid string) string {
+	if mid == "" {
+		return "empty"
+	}
+	chars := "hex"
+	for _, c := range mid[1:] {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+			if chars == "hex" {
+				chars = "HEX"
+			}
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			chars = "alnum"
+		default:
+			return fmt.Sprintf("len=%d prefix=%q chars=other", len(mid), mid[:1])
+		}
+	}
+	return fmt.Sprintf("len=%d prefix=%q chars=%s", len(mid), mid[:1], chars)
+}
+
 func exportLoginKeys(result *line.LoginResult, c *line.Client) (map[string]string, error) {
 	if result.NoE2EE {
 		return nil, errors.New("Letter Sealing disabled")
