@@ -36,14 +36,15 @@ type person struct {
 	Avatar string `json:"avatar,omitempty"`
 }
 type chat struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	LastMessage string `json:"last_message"`
-	Unread      int    `json:"unread"`
-	UpdatedAt   int64  `json:"updated_at"`
-	Avatar      string `json:"avatar,omitempty"`
-	MemberCount int    `json:"member_count"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	LastMessage string   `json:"last_message"`
+	Unread      int      `json:"unread"`
+	UpdatedAt   int64    `json:"updated_at"`
+	Avatar      string   `json:"avatar,omitempty"`
+	MemberCount int      `json:"member_count"`
+	Members     []string `json:"members,omitempty"`
 }
 type message struct {
 	ID         string `json:"id"`

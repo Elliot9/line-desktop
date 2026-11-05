@@ -18,7 +18,12 @@ func (b *backend) handleAttachment(req request) (any, error) {
 			return nil, err
 		}
 		if b.demo {
-			return map[string]any{"packs": []attachments.Pack{{ID: "demo", Name: "日常問候 · 離線示範", Stickers: []attachments.Sticker{{ID: "hello", PackageID: "demo", URL: "demo:hello"}, {ID: "thanks", PackageID: "demo", URL: "demo:thanks"}, {ID: "ok", PackageID: "demo", URL: "demo:ok"}}}}}, nil
+			stickers := make([]attachments.Sticker, len(demoMoods))
+			for i := range demoMoods {
+				id := "bear-" + strconv.Itoa(i)
+				stickers[i] = attachments.Sticker{ID: id, PackageID: "demo", URL: "demo:" + id}
+			}
+			return map[string]any{"packs": []attachments.Pack{{ID: "demo", Name: "散步小熊", Stickers: stickers}}}, nil
 		}
 		catalog, err := attachments.LoadCatalog(b.ctx, b.api(), b.region, time.Now())
 		if err != nil {
@@ -40,8 +45,7 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		}
 		var msg message
 		if b.demo {
-			names := map[string]string{"hello": "嗨，今天也要開心！ 🌿", "thanks": "謝謝你 ♡", "ok": "好喔！ ✨"}
-			text, ok := names[p.StickerID]
+			text, ok := demoSticker(p.StickerID)
 			if !ok || p.PackageID != "demo" {
 				return nil, fail("invalid_params", "貼圖不存在。")
 			}
