@@ -23,10 +23,10 @@ func avatarURL(path string) string {
 	return "https://profile.line-scdn.net/" + strings.TrimPrefix(path, "/")
 }
 func chatKind(id string) string {
-	if strings.HasPrefix(id, "c") {
+	switch midKind(id) {
+	case 'c':
 		return "group"
-	}
-	if strings.HasPrefix(id, "r") {
+	case 'r':
 		return "room"
 	}
 	return "direct"
@@ -399,7 +399,7 @@ func (b *backend) registerGroupKey(chatID string) error {
 		}
 		members := make([]string, 0, len(keys))
 		for mid, key := range keys {
-			if !validMID(mid) || mid[0] != 'u' || key.KeyID <= 0 || key.KeyData == "" {
+			if !validMID(mid) || midKind(mid) != 'u' || key.KeyID <= 0 || key.KeyData == "" {
 				return errors.New("invalid group registration member")
 			}
 			members = append(members, mid)
@@ -430,9 +430,9 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 	var chunks []string
 	var err error
 	toType := 0
-	if strings.HasPrefix(chatID, "c") || strings.HasPrefix(chatID, "r") {
+	if kind := midKind(chatID); kind == 'c' || kind == 'r' {
 		toType = 2
-		if chatID[0] == 'r' {
+		if kind == 'r' {
 			toType = 1
 		}
 		if err = b.ensureGroupKey(chatID, 0, true); err == nil {

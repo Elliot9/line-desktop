@@ -97,3 +97,26 @@ func TestAccountProblemDiagnosis(t *testing.T) {
 		t.Fatal("missing profile data must be diagnosed")
 	}
 }
+
+func TestLINEIDFormats(t *testing.T) {
+	long := "U" + strings.Repeat("a1B2c3D4e5", 4) + "xYz"
+	for _, mid := range []string{"u8ae764e8e69e6bd4ecdd9b6ea0c40fce", long, "C" + long[1:], "r" + long[1:]} {
+		if !validMID(mid) {
+			t.Fatalf("rejected LINE ID %q", mid)
+		}
+	}
+	for _, mid := range []string{"", "u-short", "x" + long[1:], "U" + strings.Repeat("a", 30) + "/../x", "U" + strings.Repeat("a", 200)} {
+		if validMID(mid) {
+			t.Fatalf("accepted invalid ID %q", mid)
+		}
+	}
+	if chatKind("C"+long[1:]) != "group" || chatKind("R"+long[1:]) != "room" || chatKind(long) != "direct" {
+		t.Fatal("chat kind must ignore prefix case")
+	}
+	if toType("C"+long[1:]) != 2 || toType("R"+long[1:]) != 1 || toType(long) != 0 {
+		t.Fatal("send type must ignore prefix case")
+	}
+	if problem := accountProblem(&line.Profile{Mid: long}, long); problem != "" {
+		t.Fatalf("44-character uppercase-prefix MID rejected: %s", problem)
+	}
+}

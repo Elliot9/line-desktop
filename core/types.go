@@ -85,12 +85,34 @@ func params(raw json.RawMessage, out any) error {
 	}
 	return nil
 }
+
+// midKind reports 'u' (user), 'c' (group) or 'r' (room) for a LINE ID, or 0.
+// LINE uses both the classic "u" + 32 hex form and longer IDs with an
+// uppercase prefix ("U…", 44 alphanumeric characters), so the prefix is
+// compared case-insensitively, as upstream beeper/line does.
+func midKind(mid string) byte {
+	if mid == "" {
+		return 0
+	}
+	switch mid[0] {
+	case 'u', 'U':
+		return 'u'
+	case 'c', 'C':
+		return 'c'
+	case 'r', 'R':
+		return 'r'
+	}
+	return 0
+}
+
+// validMID accepts LINE user, group and room IDs. It only allows URL- and
+// JSON-safe characters so a chat ID from the UI cannot smuggle anything else.
 func validMID(mid string) bool {
-	if len(mid) != 33 || !strings.ContainsRune("ucr", rune(mid[0])) {
+	if len(mid) < 20 || len(mid) > 128 || midKind(mid) == 0 {
 		return false
 	}
 	for _, c := range mid[1:] {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' || c == '_') {
 			return false
 		}
 	}
