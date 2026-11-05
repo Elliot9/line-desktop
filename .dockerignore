@@ -1,0 +1,7 @@
+.git
+.build
+.audit
+dist
+bin
+**/__pycache__
+**/*.py[cod]

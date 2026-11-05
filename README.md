@@ -26,6 +26,20 @@ LINE 的 Letter Sealing 必須可用。目前文字與檔案傳送不會退回�
 
 展示模式不連線到 LINE，內容與 `index.html` 相同，可直接比對兩者的畫面。聊天、貼圖、檔案、置頂與 Keep 筆記只會改變本次示範資料；記事會保存在這台電腦。標題列會持續標示「離線展示」。
 
+## 在 macOS／Windows 看實際畫面
+
+沒有 Linux 電腦時，可以用 Docker 在容器裡執行 GTK 程式，再用瀏覽器操作畫面。第一次建置約需 10 分鐘。
+
+```bash
+docker build -t line-desktop-view -f scripts/remote-view.Dockerfile .
+```
+
+```bash
+docker run --rm -p 127.0.0.1:6080:6080 line-desktop-view
+```
+
+接著在瀏覽器開啟 <http://localhost:6080>。預設是離線展示；加上 `-e LINE_MODE=live` 可以登入真實帳號，登入資料只存在這次容器的鑰匙圈，容器結束即刪除。連接埠只綁定 `127.0.0.1`，同一網路的其他電腦無法連入。透過瀏覽器畫面輸入中文可能無法使用輸入法。
+
 ## 使用已包好的版本
 
 選擇與電腦架構相符的壓縮檔。一般 Intel／AMD 電腦使用 `amd64`，ARM 電腦使用 `arm64`。
