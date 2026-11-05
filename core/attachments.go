@@ -145,13 +145,11 @@ func (b *backend) handleAttachment(req request) (any, error) {
 }
 
 func toType(chatID string) int {
-	if len(chatID) > 0 {
-		if chatID[0] == 'c' {
-			return 2
-		}
-		if chatID[0] == 'r' {
-			return 1
-		}
+	switch midKind(chatID) {
+	case 'c':
+		return 2
+	case 'r':
+		return 1
 	}
 	return 0
 }
