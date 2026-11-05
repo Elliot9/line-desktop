@@ -1,0 +1,100 @@
+@define-color ink #26332e;
+@define-color muted #939c97;
+@define-color green #06b35d;
+* { font-family: "Noto Sans CJK TC", "Noto Sans TC", "DejaVu Sans", sans-serif; font-size: 13px; color: @ink; }
+window { background: #fff; }
+headerbar { min-height: 48px; background: #f8faf8; box-shadow: none; border-bottom: 1px solid #e5ece7; }
+headerbar button { color: #84938a; }
+button { background: transparent; box-shadow: none; border: none; border-radius: 7px; padding: 8px 10px; }
+button:hover { background: #f0f5f1; }
+button:focus-visible, entry:focus { outline: 2px solid #93d9b4; outline-offset: 1px; }
+button:disabled { opacity: .42; }
+label { color: inherit; }
+.wordmark { font-size: 18px; font-weight: 800; color: @green; letter-spacing: -1px; }
+.tagline { font-size: 11px; color: #89978f; letter-spacing: 1px; }
+.mode-pill { background: #e7f1e9; color: #718b7b; padding: 7px 13px; border-radius: 20px; font-size: 10px; }
+.rail { background: #27342f; }
+.rail-logo { background: @green; color: #fff; font-weight: 900; letter-spacing: -1px; min-height: 41px; border-radius: 12px; font-size: 13px; }
+.rail-button { color: #a8b4ad; padding: 11px 0; border-radius: 10px; min-width: 53px; }
+.rail-button label { font-size: 9px; }
+.rail-button image { color: inherit; }
+.rail-button box, .rail-button label, .rail-button image { color: inherit; }
+.rail-button.active box, .rail-button.active label, .rail-button.active image { color: #77e6a5; }
+.rail-button:hover { background: #35463c; }
+.rail-button.active { background: #3c4d43; color: #77e6a5; }
+.sidebar { background: #fff; border-right: 1px solid #edf0ee; }
+.page-title { font-size: 21px; font-weight: 700; letter-spacing: 1px; }
+.icon-button { min-width: 25px; min-height: 25px; padding: 5px; color: #839088; }
+searchentry, entry, passwordentry { border: 1px solid #edf1ed; border-radius: 7px; background: #f3f6f3; box-shadow: none; color: #405347; padding: 8px; font-size: 12px; }
+searchentry image { color: #9ba89f; }
+.filter { padding: 5px 12px; font-size: 11px; color: #98a29b; }
+.filter.active { color: #008a48; background: #e8f8ef; font-weight: 600; }
+.section-label { color: #96a39a; font-size: 10px; letter-spacing: 1px; }
+.chat-list { background: transparent; }
+.chat-list > row { padding: 0; }
+.chat-list > row:hover { background: transparent; }
+.chat-row { padding: 17px 16px 17px 18px; border-radius: 0; border-left: 3px solid transparent; }
+.chat-row:hover { background: #f7faf8; }
+.chat-row.selected { background: #eef7f1; border-left-color: @green; }
+.row-title { font-size: 12px; font-weight: 650; }
+.row-preview { color: #98a49b; font-size: 10px; }
+.avatar { border-radius: 15px; font-weight: 650; font-size: 16px; color: #617967; background: #dfeadf; }
+.avatar.large { border-radius: 23px; font-size: 25px; }
+.sage { background: #dce8da; color: #637f65; }
+.peach { background: #f0dfd3; color: #a58066; }
+.lavender { background: #e5e1ed; color: #8a7f9c; }
+.sand { background: #ede7cf; color: #92895e; }
+.unread { background: @green; color: white; border-radius: 20px; min-width: 15px; min-height: 17px; font-size: 9px; padding: 0 3px; }
+.connection { color: #9aaa9f; font-size: 9px; border-top: 1px solid #f1f4f1; }
+.chat-header { background: #fff; border-bottom: 1px solid #edf0ee; min-height: 45px; }
+.chat-title { font-size: 15px; font-weight: 650; letter-spacing: .5px; }
+.conversation { background: #eaf0f1; }
+.day-label { color: #91a29a; font-size: 9px; letter-spacing: .6px; }
+.bubble { background: #fff; color: #46564b; border-radius: 2px 13px 13px 13px; padding: 13px 16px; font-size: 12px; line-height: 1.6; }
+.bubble.mine { background: #bde7c8; border-radius: 13px 2px 13px 13px; }
+.sender { color: #879a8e; font-size: 9px; padding-left: 2px; }
+.message-meta { color: #95a49c; font-size: 8px; }
+.message-meta.failed { color: #bb6459; }
+.composer { background: #fff; border-top: 1px solid #e9eeeb; }
+.compose-input, .compose-input text { background: #fff; color: #405347; font-size: 12px; }
+.tool { color: #8d9e91; padding: 3px 6px; font-size: 10px; }
+.tool image { -gtk-icon-size: 17px; }
+.send { background: @green; color: #fff; min-height: 32px; min-width: 32px; border-radius: 9px; padding: 3px; }
+.send:hover { background: #00a854; }
+.send:disabled { background: #e5f3e9; color: #a3cbb0; opacity: 1; }
+.details { background: #fff; border-left: 1px solid #edf0ee; }
+.detail-title { font-size: 13px; font-weight: 650; letter-spacing: .5px; }
+.detail-tab { color: #008a48; font-size: 10px; padding: 13px 0; border-bottom: 2px solid @green; }
+.detail-disabled { font-size: 9px; padding: 5px; }
+.note-card { background: #fcfdfb; border: 1px solid #e7ece6; border-radius: 8px; }
+.note-tag { background: #f5f0dd; color: #9f9464; padding: 3px 5px; border-radius: 3px; font-size: 8px; }
+.note-text { font-size: 10px; color: #93a097; line-height: 1.8; }
+.note-editor { background: #fbfdfb; border: 1px solid #e3ebe4; border-radius: 8px; padding: 12px; }
+.quiet { background: #f1f5f1; color: #75877a; font-size: 11px; }
+.primary { background: @green; color: #fff; font-weight: 600; padding: 11px 18px; }
+.primary:hover { background: #009f51; }
+.danger { color: #cb6a61; border: 1px solid #efddd9; padding: 10px 22px; }
+.small { font-size: 11px; }
+.tiny { font-size: 9px; }
+.muted { color: #98a59c; }
+.fine-print { color: #aab6ad; font-size: 9px; }
+.notice { background: #e7f4eb; color: #507d60; padding: 10px 20px; font-size: 11px; }
+.notice.error { background: #fbefeb; color: #b76752; }
+.settings-page { background: #f8fbf8; }
+.settings-card { background: #fff; border: 1px solid #e6ede7; border-radius: 12px; }
+.hero-small { font-size: 26px; font-weight: 650; }
+.available { color: #008a48; font-size: 11px; }
+.login { background: #fff; }
+.login-art { background: #e8f0e8; }
+.login-wordmark { color: @green; font-weight: 900; font-size: 36px; letter-spacing: -2px; }
+.hero-title { font-size: 34px; font-weight: 650; color: #3f5b48; line-height: 1.5; }
+.hero-subtitle { font-size: 12px; color: #859d8b; letter-spacing: 1px; }
+.login-card { background: white; }
+.tab { color: #9aa79e; font-size: 11px; padding: 11px 9px; border-bottom: 2px solid #f0f4f0; border-radius: 0; }
+.tab.active { color: #008a48; border-bottom-color: @green; }
+.qr-placeholder { background: #f8fbf8; border: 1px solid #e6eee7; border-radius: 15px; padding: 35px; }
+.qr-placeholder image { color: #b8cebd; }
+.pin { font-size: 30px; color: #008a48; font-weight: 700; letter-spacing: 8px; }
+separator { background: #edf0ee; min-height: 1px; }
+scrollbar { background: transparent; }
+scrollbar slider { min-width: 4px; min-height: 25px; background: #c9d7ce; border-radius: 4px; }

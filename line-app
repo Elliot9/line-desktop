@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+case ${1:-} in
+    --help|-h)
+        cat <<'HELP'
+LINE for Linux（非官方 GTK 4 用戶端）
+
+  ./line-app                 啟動；首次執行安裝缺少的相依套件並建置
+  ./line-app --demo          開啟離線展示，不連線至 LINE
+  ./line-app --setup         只安裝相依套件與建置
+  ./line-app --install-menu  加入目前使用者的應用程式選單
+  ./line-app --smoke-test DIR 在 Linux 顯示工作階段執行 GUI 自動檢查
+
+支援 Ubuntu 24.04+／Debian 12+，x86_64 與 ARM64。
+HELP
+        exit 0 ;;
+esac
+
+if [[ $(uname -s) != Linux ]]; then
+    echo '這是 Linux 原生 GTK 應用程式。請將專案放到 Ubuntu／Debian，執行 ./line-app。' >&2
+    exit 1
+fi
+
+if [[ ${1:-} == --setup ]] || ! /usr/bin/python3 -c \
+    'import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk, GdkPixbuf; assert any(f.get_name() == "svg" for f in GdkPixbuf.Pixbuf.get_formats())' 2>/dev/null \
+    || ! command -v curl >/dev/null || ! command -v secret-tool >/dev/null \
+    || ! command -v flock >/dev/null; then
+    "$project_dir/scripts/setup-debian.sh"
+fi
+
+if [[ -z ${LINE_APP_CORE:-} ]]; then
+    export LINE_APP_CORE
+    case $(uname -m) in
+        x86_64) bundled_arch=amd64 ;;
+        aarch64|arm64) bundled_arch=arm64 ;;
+        *) bundled_arch=unsupported ;;
+    esac
+    if [[ -x $project_dir/bin/line-core-linux-$bundled_arch ]]; then
+        LINE_APP_CORE=$project_dir/bin/line-core-linux-$bundled_arch
+    else
+        LINE_APP_CORE=$("$project_dir/scripts/build-core.sh")
+    fi
+elif [[ ! -x $LINE_APP_CORE ]]; then
+    echo 'LINE_APP_CORE 指向的通訊核心不存在或無法執行。' >&2
+    exit 1
+fi
+if [[ ${1:-} == --setup ]]; then
+    echo '設定完成。執行 ./line-app 啟動，或 ./line-app --demo 預覽。'
+    exit 0
+fi
+if [[ ${1:-} == --install-menu ]]; then
+    exec /usr/bin/python3 "$project_dir/scripts/install-menu.py"
+fi
+if [[ -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} ]]; then
+    echo '找不到圖形工作階段。請在 Linux 桌面終端機執行 ./line-app。' >&2
+    exit 1
+fi
+
+cd -- "$project_dir"
+exec /usr/bin/python3 -m desktop "$@"
+

@@ -1,0 +1,3961 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#eef3f0" />
+    <title>LINE Desktop · 通訊，簡單一點。</title>
+    <style>
+      :root {
+        --green: #06b35d;
+        --green-dark: #008a48;
+        --ink: #26332e;
+        --muted: #939c97;
+        --line: #edf0ee;
+        --canvas: #eaf0f1;
+        --rail: #27342f;
+        --font: 14px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #eef3f0;
+        color: var(--ink);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC",
+          "PingFang TC", "Microsoft JhengHei", sans-serif;
+        font-size: var(--font);
+        height: 100vh;
+        overflow: hidden;
+      }
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+        border: 0;
+        background: none;
+        color: inherit;
+      }
+      button,
+      a,
+      input,
+      textarea,
+      select {
+        outline-offset: 4px;
+      }
+      button:focus-visible,
+      a:focus-visible {
+        outline: 2px solid #04a85a;
+      }
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: 2px solid #9cddbd;
+        outline-offset: 0;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      button:hover {
+        filter: brightness(0.98);
+      }
+      a {
+        color: var(--green-dark);
+      }
+      svg {
+        display: block;
+        flex-shrink: 0;
+      }
+      button svg {
+        pointer-events: none;
+      }
+      .presentation {
+        height: 88px;
+        max-width: 1536px;
+        margin: auto;
+        padding: 0 42px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .wordmark {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .wordmark strong {
+        font-size: 19px;
+        letter-spacing: -0.6px;
+      }
+      .wordmark span {
+        color: #8a9690;
+        font-size: 12px;
+        border-left: 1px solid #ccd6cf;
+        padding-left: 17px;
+        letter-spacing: 1px;
+      }
+      .demo-pill {
+        font-size: 11px;
+        letter-spacing: 1px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: #789083;
+        background: #e4ece6;
+        border: 1px solid #d9e4dc;
+        border-radius: 20px;
+        padding: 8px 13px;
+      }
+      .demo-pill i {
+        width: 5px;
+        height: 5px;
+        background: var(--green);
+        border-radius: 50%;
+      }
+      .window {
+        height: calc(100vh - 116px);
+        max-width: 1452px;
+        margin: 0 auto;
+        border: 1px solid #d7e0da;
+        border-radius: 12px;
+        background: white;
+        overflow: hidden;
+        box-shadow:
+          0 22px 70px #314b3d13,
+          0 3px 12px #314b3d08;
+      }
+      .titlebar {
+        height: 37px;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        background: #f8f9f8;
+        border-bottom: 1px solid #e8ede9;
+        position: relative;
+        user-select: none;
+      }
+      .traffic {
+        display: flex;
+        gap: 7px;
+      }
+      .traffic i {
+        height: 10px;
+        width: 10px;
+        border-radius: 50%;
+        background: #ff625a;
+        border: 1px solid #e7554e;
+      }
+      .traffic i:nth-child(2) {
+        background: #ffbf45;
+        border-color: #edaf35;
+      }
+      .traffic i:nth-child(3) {
+        background: #31c64f;
+        border-color: #29b742;
+      }
+      .titlebar-name {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 10px;
+        color: #a1aaa4;
+        letter-spacing: 2px;
+      }
+      .titlebar-end {
+        margin-left: auto;
+        font-size: 10px;
+        color: #a1aaa4;
+      }
+      .app {
+        height: calc(100% - 37px);
+        display: flex;
+      }
+      .rail {
+        width: 74px;
+        background: var(--rail);
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        flex-direction: column;
+        padding: 25px 0 16px;
+        gap: 9px;
+      }
+      .line-logo {
+        width: 40px;
+        height: 40px;
+        background: var(--green);
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 22px;
+        color: white;
+        font-weight: 800;
+        font-size: 12px;
+        letter-spacing: -1px;
+        position: relative;
+      }
+      .line-logo:after {
+        content: "";
+        position: absolute;
+        bottom: 6px;
+        left: 12px;
+        border: 4px solid transparent;
+        border-top-color: white;
+        transform: rotate(14deg);
+      }
+      .line-logo span {
+        background: white;
+        color: var(--green);
+        border-radius: 7px;
+        padding: 3px 4px;
+        font-size: 10px;
+        line-height: 14px;
+      }
+      .rail-btn {
+        position: relative;
+        color: #a8b4ad;
+        border-radius: 10px;
+        width: 51px;
+        min-height: 55px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        font-size: 9px;
+        letter-spacing: 0.5px;
+      }
+      .rail-btn.active {
+        background: #3c4d43;
+        color: #77e6a5;
+      }
+      .rail-btn:hover {
+        background: #35463c;
+      }
+      .rail-btn .navdot {
+        position: absolute;
+        width: 6px;
+        height: 6px;
+        background: #0dcc77;
+        right: 11px;
+        top: 9px;
+        border-radius: 50%;
+        border: 2px solid #27342f;
+      }
+      .rail-spacer {
+        flex: 1;
+      }
+      .rail-self {
+        margin-top: 6px;
+      }
+      .rail-self .avatar {
+        width: 30px;
+        height: 30px;
+      }
+      .sidebar {
+        width: 292px;
+        flex-shrink: 0;
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        background: white;
+      }
+      .side-top {
+        padding: 28px 22px 17px;
+      }
+      .side-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 21px;
+      }
+      .side-title h1 {
+        font-size: 21px;
+        letter-spacing: 1px;
+        margin: 0;
+        font-weight: 650;
+      }
+      .side-buttons {
+        display: flex;
+        gap: 5px;
+      }
+      .icon-btn {
+        width: 31px;
+        height: 31px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 7px;
+        color: #77837b;
+        flex-shrink: 0;
+      }
+      .icon-btn:hover {
+        background: #eef3ef;
+        color: var(--ink);
+      }
+      .searchbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: #f3f5f3;
+        border-radius: 7px;
+        padding: 9px 11px;
+        color: #a1aaa4;
+      }
+      .searchbox input {
+        border: 0;
+        background: transparent;
+        min-width: 0;
+        width: 100%;
+        outline: none;
+        font-size: 12px;
+        color: #3e4b43;
+      }
+      .searchbox input:focus {
+        outline: 0;
+      }
+      .searchbox input::placeholder {
+        color: #a0a8a3;
+      }
+      .filter-row {
+        display: flex;
+        gap: 7px;
+        margin-top: 15px;
+      }
+      .filter {
+        border-radius: 5px;
+        padding: 5px 12px;
+        color: #98a29b;
+        font-size: 11px;
+      }
+      .filter.active {
+        background: #e8f8ef;
+        color: var(--green-dark);
+        font-weight: 600;
+      }
+      .filter:hover {
+        background: #f2f6f3;
+      }
+      .chat-list {
+        flex: 1;
+        overflow: auto;
+      }
+      .list-label {
+        font-size: 10px;
+        letter-spacing: 1.5px;
+        color: #a4aca7;
+        padding: 10px 24px 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .chat-row {
+        display: flex;
+        gap: 12px;
+        padding: 17px 20px 17px 22px;
+        text-align: left;
+        width: 100%;
+        position: relative;
+        align-items: center;
+        min-height: 82px;
+        border-left: 3px solid transparent;
+      }
+      .chat-row:hover {
+        background: #f7faf8;
+      }
+      .chat-row.active {
+        background: #eef7f1;
+        border-left-color: var(--green);
+      }
+      .avatar {
+        width: 43px;
+        height: 43px;
+        border-radius: 16px;
+        overflow: hidden;
+        flex-shrink: 0;
+        background: #e5ece6;
+        display: inline-grid;
+        place-items: center;
+        font-weight: 600;
+        color: #617967;
+        font-size: 16px;
+      }
+      .avatar svg {
+        width: 100%;
+        height: 100%;
+      }
+      .avatar.group {
+        background: #d9e9db;
+      }
+      .avatar.small {
+        width: 29px;
+        height: 29px;
+        border-radius: 10px;
+        font-size: 11px;
+      }
+      .avatar.large {
+        width: 68px;
+        height: 68px;
+        border-radius: 23px;
+      }
+      .chat-row-info {
+        min-width: 0;
+        flex: 1;
+      }
+      .chat-row-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 7px;
+        margin-bottom: 7px;
+      }
+      .chat-name {
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .chat-time {
+        font-size: 9px;
+        color: #a1aaa4;
+        white-space: nowrap;
+        font-weight: 400;
+      }
+      .chat-row-bottom {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .chat-preview {
+        font-size: 10px;
+        color: #9ba59e;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+        flex: 1;
+        line-height: 1.3;
+      }
+      .unread {
+        background: #06b75e;
+        border-radius: 20px;
+        font-size: 9px;
+        min-width: 17px;
+        height: 17px;
+        display: grid;
+        place-items: center;
+        color: white;
+        padding: 0 4px;
+      }
+      .chat-row.active .chat-preview {
+        color: #6c8a78;
+      }
+      .side-footer {
+        padding: 16px 24px;
+        font-size: 9px;
+        letter-spacing: 1px;
+        color: #a9b1ac;
+        border-top: 1px solid #f3f5f3;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .side-footer i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #69bc8a;
+      }
+      .workspace {
+        min-width: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      .chat-header {
+        height: 85px;
+        min-height: 85px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 27px;
+        border-bottom: 1px solid var(--line);
+        background: white;
+      }
+      .chat-heading {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        min-width: 0;
+      }
+      .chat-heading .avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 13px;
+      }
+      .chat-title {
+        font-size: 15px;
+        font-weight: 650;
+        margin-bottom: 6px;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 240px;
+      }
+      .chat-subtitle {
+        font-size: 10px;
+        color: #a2aba5;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .chat-subtitle i {
+        width: 4px;
+        height: 4px;
+        background: #74c995;
+        border-radius: 50%;
+      }
+      .header-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .header-actions .divider {
+        width: 1px;
+        height: 20px;
+        background: #edf0ed;
+        margin: 0 2px;
+      }
+      .body-split {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      .conversation {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+        background: var(--canvas);
+      }
+      .conversation-search {
+        padding: 10px 20px;
+        background: #f7faf9;
+        border-bottom: 1px solid #dce6e0;
+        display: none;
+        gap: 10px;
+        align-items: center;
+      }
+      .conversation-search.open {
+        display: flex;
+      }
+      .conversation-search .searchbox {
+        flex: 1;
+        background: white;
+      }
+      .search-count {
+        font-size: 10px;
+        color: #788a7f;
+        white-space: nowrap;
+      }
+      .messages {
+        flex: 1;
+        overflow: auto;
+        padding: 23px 29px 13px;
+        scroll-behavior: smooth;
+      }
+      .date-divider {
+        display: flex;
+        justify-content: center;
+        margin: 0 0 23px;
+      }
+      .date-divider span {
+        font-size: 9px;
+        color: #81938a;
+        background: #dce6e5a8;
+        border-radius: 20px;
+        padding: 5px 12px;
+        letter-spacing: 0.6px;
+      }
+      .message {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        margin-bottom: 18px;
+        position: relative;
+      }
+      .message .avatar {
+        margin-top: 18px;
+        width: 28px;
+        height: 28px;
+        border-radius: 10px;
+      }
+      .message-main {
+        max-width: 81%;
+        min-width: 0;
+      }
+      .message-sender {
+        font-size: 9px;
+        color: #84948b;
+        margin-bottom: 6px;
+        padding-left: 2px;
+        letter-spacing: 0.3px;
+      }
+      .message-line {
+        display: flex;
+        gap: 7px;
+        align-items: flex-end;
+      }
+      .bubble {
+        font-size: calc(var(--font) - 2px);
+        border-radius: 2px 13px 13px 13px;
+        background: white;
+        padding: 11px 14px;
+        line-height: 1.8;
+        box-shadow: 0 1px 2px #142d1910;
+        overflow-wrap: anywhere;
+        min-width: 25px;
+        position: relative;
+      }
+      .message.own {
+        flex-direction: row-reverse;
+        margin-top: 4px;
+      }
+      .message.own .message-line {
+        flex-direction: row-reverse;
+      }
+      .message.own .message-main {
+        max-width: 82%;
+      }
+      .message.own .bubble {
+        background: #c9efbb;
+        border-radius: 13px 2px 13px 13px;
+        color: #34523b;
+      }
+      .message-meta {
+        font-size: 8px;
+        line-height: 1.6;
+        color: #95a59d;
+        white-space: nowrap;
+        min-width: 25px;
+        padding-bottom: 2px;
+        text-align: right;
+      }
+      .message-meta .read {
+        color: #78a38a;
+        font-size: 8px;
+      }
+      .message-actions {
+        opacity: 0;
+        align-self: center;
+        transition: opacity 0.15s;
+        color: #80948a;
+        background: #ffffff9c;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
+      }
+      .message:hover .message-actions,
+      .message:focus-within .message-actions {
+        opacity: 1;
+      }
+      .bubble.image-bubble {
+        padding: 0;
+        overflow: hidden;
+        background: #c9d9c9;
+      }
+      .image-collage {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr;
+        gap: 3px;
+        width: 282px;
+        max-width: 100%;
+        height: 150px;
+      }
+      .image-collage svg {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .image-collage .mini-scenes {
+        display: grid;
+        grid-template-rows: 1fr 1fr;
+        gap: 3px;
+        overflow: hidden;
+      }
+      .image-caption {
+        padding: 9px 12px;
+        font-size: 10px;
+        color: #5c7263;
+        background: white;
+      }
+      .attachment {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        min-width: 215px;
+        max-width: 100%;
+        text-align: left;
+      }
+      .file-icon {
+        height: 40px;
+        width: 33px;
+        background: #fdf1ed;
+        border: 1px solid #f3d9d1;
+        border-radius: 5px;
+        color: #c77961;
+        font-size: 9px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+        position: relative;
+      }
+      .file-icon:after {
+        content: "";
+        position: absolute;
+        right: -1px;
+        top: -1px;
+        width: 9px;
+        height: 9px;
+        background: #fff;
+        border-left: 1px solid #f0d5cc;
+        border-bottom: 1px solid #f0d5cc;
+        border-radius: 0 3px 0 3px;
+      }
+      .file-name {
+        font-size: 11px;
+        font-weight: 600;
+        max-width: 180px;
+        word-break: break-word;
+        line-height: 1.5;
+      }
+      .file-size {
+        font-size: 9px;
+        color: #9aa69d;
+        margin-top: 4px;
+        font-weight: 400;
+      }
+      .attachment .download {
+        margin-left: auto;
+        color: #90a297;
+      }
+      .sticker-bubble {
+        padding: 0;
+        background: none !important;
+        box-shadow: none;
+        width: 120px;
+      }
+      .sticker-bubble svg {
+        width: 120px;
+        height: 108px;
+      }
+      .retracted {
+        color: #91a099;
+        font-size: 10px;
+        display: flex;
+        justify-content: center;
+        margin: 18px;
+      }
+      .reply-quote {
+        background: #f1f5f1;
+        border-left: 2px solid #9bc5a7;
+        font-size: 10px;
+        color: #8a9d90;
+        padding: 6px 9px;
+        margin: 0 0 8px;
+        border-radius: 3px;
+        max-width: 260px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .own .reply-quote {
+        background: #b8dfa9;
+        color: #63845d;
+      }
+      .reaction {
+        position: absolute;
+        bottom: -12px;
+        left: 8px;
+        background: white;
+        border: 1px solid #e5ece6;
+        border-radius: 20px;
+        padding: 1px 5px;
+        font-size: 10px;
+        line-height: 16px;
+        box-shadow: 0 1px 3px #223c2b0c;
+      }
+      .composer {
+        background: white;
+        border-top: 1px solid #e3e9e5;
+        padding: 13px 23px 12px;
+        flex-shrink: 0;
+      }
+      .composer-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+      .composer-toolbar .icon-btn {
+        width: 26px;
+        height: 28px;
+        color: #899a8e;
+      }
+      .composer-toolbar .toolbar-end {
+        margin-left: auto;
+        color: #acb5ae;
+        font-size: 9px;
+        letter-spacing: 0.5px;
+      }
+      .composer-input-row {
+        display: flex;
+        align-items: flex-end;
+        gap: 14px;
+      }
+      .composer textarea {
+        font-size: calc(var(--font) - 2px);
+        resize: none;
+        border: none;
+        outline: none !important;
+        width: 100%;
+        height: 49px;
+        max-height: 110px;
+        line-height: 1.7;
+        padding: 8px 0;
+        background: transparent;
+        color: #405347;
+      }
+      .composer textarea::placeholder {
+        color: #b0b9b2;
+      }
+      .send {
+        background: var(--green);
+        color: white;
+        border-radius: 8px;
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 7px;
+        box-shadow: 0 3px 8px #02b65c22;
+      }
+      .send:disabled {
+        background: #e5f3e9;
+        color: #a3cbb0;
+        box-shadow: none;
+        opacity: 1;
+      }
+      .composer-hint {
+        display: flex;
+        justify-content: space-between;
+        font-size: 8px;
+        letter-spacing: 0.3px;
+        color: #b4bdb6;
+        margin-top: 1px;
+      }
+      .reply-composer {
+        border-radius: 6px;
+        background: #f2f7f2;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 11px;
+        padding: 7px 10px;
+        margin-bottom: 7px;
+        color: #77917e;
+      }
+      .reply-composer span {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .details {
+        width: 254px;
+        flex-shrink: 0;
+        background: #fff;
+        border-left: 1px solid var(--line);
+        overflow: auto;
+      }
+      .detail-profile {
+        text-align: center;
+        padding: 29px 16px 23px;
+      }
+      .detail-profile .avatar {
+        margin-bottom: 13px;
+      }
+      .detail-profile h2 {
+        font-size: 13px;
+        letter-spacing: 0.7px;
+        margin: 0 0 8px;
+        font-weight: 650;
+      }
+      .detail-profile p {
+        font-size: 10px;
+        color: #9ea89f;
+        margin: 0;
+      }
+      .quick-actions {
+        display: flex;
+        justify-content: center;
+        gap: 26px;
+        padding: 0 13px 24px;
+      }
+      .quick-action {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        align-items: center;
+        color: #8a988e;
+        font-size: 9px;
+      }
+      .quick-circle {
+        border: 1px solid #e6ece7;
+        border-radius: 50%;
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        color: #899a8d;
+      }
+      .quick-action.on .quick-circle {
+        color: var(--green);
+        background: #eaf7ed;
+        border-color: #d8efdf;
+      }
+      .detail-tabs {
+        display: flex;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        padding: 0 10px;
+        position: sticky;
+        top: 0;
+        background: white;
+        z-index: 1;
+      }
+      .detail-tab {
+        flex: 1;
+        font-size: 10px;
+        color: #a2ada5;
+        padding: 14px 0 12px;
+        position: relative;
+        white-space: nowrap;
+      }
+      .detail-tab.active {
+        color: var(--green-dark);
+        font-weight: 600;
+      }
+      .detail-tab.active:after {
+        content: "";
+        height: 2px;
+        background: var(--green);
+        bottom: 0;
+        left: 10px;
+        right: 10px;
+        position: absolute;
+      }
+      .detail-content {
+        padding: 20px 18px;
+      }
+      .section-label {
+        font-size: 10px;
+        color: #89978d;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 13px;
+        letter-spacing: 0.5px;
+      }
+      .section-label button {
+        font-size: 9px;
+        color: #a2afa5;
+      }
+      .note-card {
+        border: 1px solid #e7ece6;
+        border-radius: 8px;
+        padding: 13px;
+        background: #fcfdfb;
+        text-align: left;
+        width: 100%;
+        margin-bottom: 17px;
+      }
+      .note-tag {
+        font-size: 8px;
+        color: #9f9464;
+        background: #f5f0dd;
+        border-radius: 3px;
+        padding: 3px 5px;
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+        margin-bottom: 9px;
+      }
+      .note-card h3 {
+        font-size: 11px;
+        margin: 0 0 7px;
+        line-height: 1.6;
+        font-weight: 600;
+      }
+      .note-card p {
+        font-size: 10px;
+        line-height: 1.8;
+        margin: 0;
+        color: #93a097;
+        white-space: pre-wrap;
+      }
+      .note-footer {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 12px;
+        color: #9ca99f;
+        font-size: 8px;
+      }
+      .note-footer .avatar {
+        width: 17px;
+        height: 17px;
+        border-radius: 6px;
+      }
+      .media-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
+        margin-bottom: 23px;
+      }
+      .media-grid button {
+        padding: 0;
+        aspect-ratio: 1;
+        overflow: hidden;
+        border-radius: 5px;
+        background: #eef3ef;
+      }
+      .media-grid svg,
+      .media-grid img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .members-row {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+      }
+      .members-row .avatar {
+        width: 29px;
+        height: 29px;
+        border-radius: 11px;
+      }
+      .members-row span {
+        margin-left: auto;
+        color: #acb4ad;
+        font-size: 10px;
+      }
+      .detail-file {
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .detail-file .file-name {
+        font-size: 10px;
+        max-width: 130px;
+      }
+      .detail-file .file-icon {
+        width: 27px;
+        height: 34px;
+        font-size: 8px;
+        flex-shrink: 0;
+      }
+      .detail-file .icon-btn {
+        width: 24px;
+      }
+      .subtle {
+        color: #95a399;
+        font-size: 10px;
+        line-height: 1.8;
+      }
+      .primary {
+        background: var(--green);
+        color: white;
+        border-radius: 7px;
+        padding: 10px 18px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .secondary {
+        background: #f1f5f1;
+        color: #75877a;
+        border-radius: 7px;
+        padding: 10px 18px;
+        font-size: 12px;
+      }
+      .danger {
+        color: #d96b63;
+      }
+      .text-button {
+        color: var(--green-dark);
+        font-size: 11px;
+        padding: 5px 0;
+      }
+      .empty {
+        text-align: center;
+        color: #a0ada4;
+        padding: 35px 12px;
+        font-size: 12px;
+        line-height: 1.9;
+      }
+      .empty svg {
+        margin: 0 auto 13px;
+        color: #a4b7aa;
+      }
+      .alternate {
+        display: none;
+        overflow: auto;
+        flex: 1;
+        background: #f9fbf9;
+        padding: 35px;
+      }
+      .alternate.open {
+        display: block;
+      }
+      .view-title {
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: 1px;
+        margin: 0 0 8px;
+      }
+      .view-lead {
+        font-size: 12px;
+        color: #9aa69d;
+        margin: 0 0 25px;
+      }
+      .friend-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+        gap: 15px;
+      }
+      .friend-card {
+        background: white;
+        border: 1px solid #e9eee9;
+        padding: 22px;
+        border-radius: 12px;
+        display: flex;
+        gap: 13px;
+        align-items: center;
+      }
+      .friend-card h3 {
+        font-size: 13px;
+        margin: 0 0 7px;
+      }
+      .friend-card p {
+        font-size: 10px;
+        color: #9ca89f;
+        margin: 0;
+      }
+      .friend-card .friend-main {
+        flex: 1;
+        cursor: pointer;
+      }
+      .history-card {
+        display: flex;
+        gap: 15px;
+        align-items: center;
+        background: white;
+        border: 1px solid #e8eee8;
+        border-radius: 10px;
+        padding: 17px 20px;
+        margin-bottom: 12px;
+      }
+      .history-card h3 {
+        font-size: 13px;
+        margin: 0 0 7px;
+      }
+      .history-card p {
+        font-size: 10px;
+        color: #98a49c;
+        margin: 0;
+      }
+      .history-card .icon-btn {
+        margin-left: auto;
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: #1b2f2570;
+        backdrop-filter: blur(5px);
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .modal {
+        width: 460px;
+        max-width: 100%;
+        max-height: 90vh;
+        overflow: auto;
+        background: white;
+        border-radius: 17px;
+        box-shadow: 0 24px 80px #0b261a32;
+        padding: 26px;
+        position: relative;
+      }
+      .modal.wide {
+        width: 600px;
+      }
+      .modal-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 22px;
+      }
+      .modal-head h2 {
+        margin: 0;
+        font-size: 19px;
+        letter-spacing: 0.5px;
+      }
+      .modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 9px;
+        margin-top: 24px;
+      }
+      .field {
+        display: block;
+        margin-bottom: 17px;
+        font-size: 11px;
+        color: #829387;
+      }
+      .field input,
+      .field textarea,
+      .field select {
+        display: block;
+        margin-top: 8px;
+        width: 100%;
+        border: 1px solid #e0e8e1;
+        border-radius: 7px;
+        padding: 11px 12px;
+        background: #fbfdfb;
+        color: #3a5041;
+        font-size: 13px;
+      }
+      .field textarea {
+        resize: vertical;
+        min-height: 120px;
+        line-height: 1.8;
+      }
+      .check-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 0;
+        color: #5f7566;
+        font-size: 12px;
+      }
+      .check-label input {
+        accent-color: var(--green);
+        width: 16px;
+        height: 16px;
+      }
+      .toggle-line {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        color: #6c8173;
+      }
+      .toggle {
+        width: 34px;
+        height: 20px;
+        border-radius: 20px;
+        background: #d7e1d9;
+        position: relative;
+      }
+      .toggle:after {
+        content: "";
+        position: absolute;
+        left: 3px;
+        top: 3px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 1px 3px #0001;
+      }
+      .toggle.on {
+        background: var(--green);
+      }
+      .toggle.on:after {
+        left: 17px;
+      }
+      .sticker-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 18px;
+      }
+      .sticker-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 9px;
+      }
+      .sticker-tile {
+        background: #f7faf6;
+        border: 1px solid #edf2eb;
+        border-radius: 10px;
+        padding: 5px;
+        transition: 0.15s;
+      }
+      .sticker-tile:hover {
+        background: #e9f5e9;
+        transform: translateY(-2px);
+      }
+      .sticker-tile.selected {
+        border-color: var(--green);
+        background: #eaf8ec;
+      }
+      .sticker-tile svg {
+        width: 100%;
+        height: 85px;
+      }
+      .sticker-tile span {
+        font-size: 9px;
+        color: #8c9c8d;
+      }
+      .emoji-grid {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 8px;
+      }
+      .emoji-grid button {
+        font-size: 25px;
+        padding: 10px;
+        background: #f7faf7;
+        border-radius: 8px;
+      }
+      .file-queue {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .queue-item {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        border: 1px solid #e8eee7;
+        border-radius: 9px;
+        padding: 12px;
+      }
+      .queue-item img {
+        width: 50px;
+        height: 50px;
+        object-fit: cover;
+        border-radius: 6px;
+      }
+      .queue-item .queue-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .queue-item .subtle {
+        font-size: 10px;
+        margin-top: 5px;
+      }
+      .drop-zone {
+        border: 1px dashed #c4d9c8;
+        background: #f7fbf7;
+        border-radius: 10px;
+        padding: 25px;
+        text-align: center;
+        color: #91a795;
+        font-size: 12px;
+      }
+      .call-modal {
+        background: #283f33;
+        color: white;
+        text-align: center;
+        width: 430px;
+        padding: 35px 28px;
+      }
+      .call-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 10px;
+        letter-spacing: 1px;
+        color: #afcbb8;
+        border: 1px solid #53755f;
+        border-radius: 20px;
+        padding: 5px 11px;
+        margin-bottom: 30px;
+      }
+      .call-label i {
+        width: 5px;
+        height: 5px;
+        background: #7edaa0;
+        border-radius: 50%;
+      }
+      .call-modal .avatar {
+        display: grid;
+        width: 90px;
+        height: 90px;
+        border-radius: 32px;
+        margin: 0 auto 22px;
+      }
+      .call-modal .call-label {
+        display: flex;
+        width: max-content;
+        margin: 0 auto 24px;
+      }
+      .call-modal h2 {
+        font-size: 21px;
+        letter-spacing: 1px;
+        margin: 0 0 13px;
+      }
+      .call-status {
+        color: #a9c6b3;
+        font-size: 12px;
+        height: 25px;
+      }
+      .call-controls {
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+        margin-top: 32px;
+      }
+      .call-control {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        font-size: 9px;
+        color: #b7d0bd;
+        align-items: center;
+      }
+      .call-control .circle {
+        height: 47px;
+        width: 47px;
+        border-radius: 50%;
+        background: #405d4a;
+        display: grid;
+        place-items: center;
+      }
+      .call-control.off .circle {
+        background: #6a756c;
+      }
+      .hangup .circle {
+        background: #e46b66;
+      }
+      .call-end-note {
+        font-size: 9px;
+        color: #88a992;
+        line-height: 1.8;
+        margin-top: 25px;
+      }
+      .lightbox {
+        background: #1f3027;
+        width: 780px;
+        padding: 20px;
+      }
+      .lightbox .modal-head {
+        color: #eef5ef;
+        margin-bottom: 12px;
+      }
+      .lightbox-image {
+        height: min(60vh, 500px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #17261e;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .lightbox-image svg,
+      .lightbox-image img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+      .lightbox-controls {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 25px;
+        color: #c5d5c9;
+        padding-top: 18px;
+        font-size: 12px;
+      }
+      .lightbox-controls .icon-btn {
+        color: #c5d5c9;
+      }
+      .popover {
+        position: fixed;
+        z-index: 12;
+        background: white;
+        border: 1px solid #e0e9e1;
+        border-radius: 10px;
+        box-shadow: 0 8px 35px #214c3126;
+        min-width: 150px;
+        padding: 6px;
+      }
+      .popover button {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 11px;
+        padding: 10px 12px;
+        text-align: left;
+        border-radius: 5px;
+        color: #748879;
+      }
+      .popover button:hover {
+        background: #edf6ee;
+      }
+      .toast {
+        position: fixed;
+        bottom: 37px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 30;
+        background: #2b4939;
+        color: white;
+        border-radius: 9px;
+        padding: 12px 19px;
+        font-size: 12px;
+        box-shadow: 0 8px 30px #28443420;
+        animation: toastIn 0.2s ease;
+      }
+      .drag-overlay {
+        position: absolute;
+        inset: 10px;
+        border: 2px dashed var(--green);
+        border-radius: 12px;
+        background: #e8f9eeed;
+        z-index: 5;
+        display: none;
+        place-items: center;
+        color: #35895b;
+        font-size: 17px;
+        pointer-events: none;
+      }
+      .drag-overlay.show {
+        display: grid;
+      }
+      .mobile-back {
+        display: none;
+      }
+      .note-controls {
+        display: flex;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .note-controls button {
+        font-size: 10px;
+        color: #8aa18f;
+      }
+      .note-detail-body {
+        font-size: 13px;
+        line-height: 2;
+        color: #607d68;
+        white-space: pre-wrap;
+      }
+      .album-card {
+        border: 1px solid #e4ece4;
+        border-radius: 9px;
+        overflow: hidden;
+        margin-bottom: 15px;
+        width: 100%;
+        text-align: left;
+        padding: 0;
+      }
+      .album-cover {
+        height: 100px;
+        background: #edf4ee;
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+      }
+      .album-cover svg,
+      .album-cover img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .album-name {
+        padding: 11px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .album-name span {
+        display: block;
+        font-size: 9px;
+        color: #a0aea2;
+        margin-top: 5px;
+        font-weight: 400;
+      }
+      .help-block {
+        padding: 15px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .help-block h3 {
+        font-size: 13px;
+        margin: 0 0 8px;
+      }
+      .help-block p,
+      .help-block li {
+        font-size: 11px;
+        line-height: 1.9;
+        color: #8a9e8f;
+      }
+      .help-block p {
+        margin: 0;
+      }
+      .help-block a {
+        display: inline-block;
+        margin-right: 12px;
+      }
+      .profile-card {
+        text-align: center;
+        padding: 10px;
+      }
+      .profile-card .avatar {
+        margin-bottom: 13px;
+      }
+      .profile-card h3 {
+        font-size: 22px;
+        margin: 0 0 10px;
+      }
+      .profile-card p {
+        font-size: 12px;
+        color: #95a99a;
+        line-height: 1.8;
+      }
+      .contact-choice {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        border-radius: 8px;
+        background: #f8fbf7;
+        margin-bottom: 7px;
+        font-size: 12px;
+      }
+      .contact-choice input {
+        accent-color: var(--green);
+        margin-left: auto;
+      }
+      .modal-error {
+        font-size: 11px;
+        color: #cf746c;
+        min-height: 17px;
+        margin: 4px 0;
+      }
+      .photo-message {
+        max-width: 280px;
+        max-height: 250px;
+        object-fit: cover;
+        border-radius: 10px;
+        cursor: zoom-in;
+      }
+      .search-highlight {
+        outline: 2px solid #a6cd83;
+        outline-offset: 3px;
+      }
+      .call-video-preview {
+        height: 120px;
+        background: #1d3225;
+        border: 1px solid #476b50;
+        border-radius: 10px;
+        margin-top: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        color: #86a98f;
+        gap: 8px;
+      }
+      .small-label {
+        font-size: 9px;
+        text-transform: uppercase;
+        color: #abb8ae;
+        letter-spacing: 1px;
+      }
+      .scrollbar {
+        scrollbar-width: thin;
+        scrollbar-color: #d9e3da transparent;
+      }
+      *::-webkit-scrollbar {
+        width: 5px;
+      }
+      *::-webkit-scrollbar-thumb {
+        background: #d9e3da;
+        border-radius: 8px;
+      }
+      ::selection {
+        background: #c4ebca;
+      }
+      @keyframes toastIn {
+        from {
+          opacity: 0;
+          transform: translate(-50%, 6px);
+        }
+        to {
+          opacity: 1;
+          transform: translate(-50%, 0);
+        }
+      }
+      @media (min-width: 1600px) {
+        .presentation {
+          height: 100px;
+        }
+        .window {
+          height: calc(100vh - 140px);
+        }
+        .sidebar {
+          width: 310px;
+        }
+        .details {
+          width: 280px;
+        }
+        .messages {
+          padding-left: 38px;
+          padding-right: 38px;
+        }
+      }
+      @media (max-width: 1450px) {
+        .window {
+          margin: 0 28px;
+        }
+        .presentation {
+          padding: 0 30px;
+        }
+        .details {
+          width: 238px;
+        }
+        .sidebar {
+          width: 270px;
+        }
+        .chat-header {
+          padding: 0 22px;
+        }
+        .messages {
+          padding-left: 23px;
+          padding-right: 23px;
+        }
+        .header-actions {
+          gap: 7px;
+        }
+      }
+      @media (max-width: 1150px) {
+        .details {
+          display: none;
+        }
+        .body-split.show-details .details {
+          display: block;
+          position: absolute;
+          right: 0;
+          top: 122px;
+          bottom: 0;
+          z-index: 4;
+          box-shadow: -10px 0 35px #203c2820;
+          width: 265px;
+        }
+        .window {
+          position: relative;
+        }
+        .sidebar {
+          width: 270px;
+        }
+        .presentation {
+          height: 70px;
+        }
+        .window {
+          height: calc(100vh - 90px);
+        }
+        .body-split.show-details .details {
+          top: 122px;
+        }
+        .chat-title {
+          max-width: 230px;
+        }
+      }
+      @media (max-width: 760px) {
+        .presentation {
+          height: 58px;
+          padding: 0 17px;
+        }
+        .wordmark {
+          gap: 9px;
+        }
+        .wordmark strong {
+          font-size: 16px;
+        }
+        .wordmark span {
+          font-size: 10px;
+          padding-left: 10px;
+          letter-spacing: 0;
+        }
+        .demo-pill {
+          font-size: 9px;
+          padding: 6px 8px;
+          letter-spacing: 0;
+        }
+        .window {
+          margin: 0 10px;
+          height: calc(100dvh - 69px);
+          border-radius: 9px;
+        }
+        .rail {
+          width: 58px;
+          padding-top: 20px;
+        }
+        .rail-btn {
+          width: 43px;
+          font-size: 8px;
+          min-height: 50px;
+        }
+        .line-logo {
+          width: 32px;
+          height: 32px;
+          border-radius: 10px;
+          margin-bottom: 17px;
+        }
+        .sidebar {
+          width: 230px;
+        }
+        .side-top {
+          padding: 25px 16px 13px;
+        }
+        .chat-row {
+          padding: 15px 14px;
+          gap: 9px;
+        }
+        .avatar {
+          width: 38px;
+          height: 38px;
+          border-radius: 13px;
+        }
+        .chat-row .chat-name {
+          font-size: 11px;
+        }
+        .chat-header {
+          padding: 0 16px;
+          height: 75px;
+          min-height: 75px;
+        }
+        .chat-heading > .avatar {
+          display: none;
+        }
+        .chat-title {
+          font-size: 14px;
+          max-width: 160px;
+        }
+        .header-actions {
+          gap: 1px;
+        }
+        .header-actions .divider {
+          display: none;
+        }
+        .messages {
+          padding: 20px 15px;
+        }
+        .bubble {
+          font-size: calc(var(--font) - 2px);
+          padding: 9px 12px;
+        }
+        .message-main {
+          max-width: 85%;
+        }
+        .composer {
+          padding: 11px 16px;
+        }
+        .composer-toolbar {
+          gap: 5px;
+        }
+        .composer-toolbar .toolbar-end {
+          font-size: 8px;
+        }
+        .body-split.show-details .details {
+          top: 112px;
+        }
+        .image-collage {
+          width: 240px;
+          height: 140px;
+        }
+        .alternate {
+          padding: 25px 20px;
+        }
+      }
+      @media (max-width: 620px) {
+        .wordmark span {
+          display: none;
+        }
+        .sidebar {
+          width: calc(100% - 58px);
+        }
+        .workspace {
+          display: none;
+        }
+        .app.mobile-chat .sidebar {
+          display: none;
+        }
+        .app.mobile-chat .workspace {
+          display: flex;
+        }
+        .app.mobile-chat .rail {
+          display: none;
+        }
+        .mobile-back {
+          display: inline-flex;
+          width: 22px;
+          margin-right: 1px;
+        }
+        .chat-heading {
+          gap: 7px;
+        }
+        .chat-heading > .avatar {
+          display: inline-grid;
+          width: 33px;
+          height: 33px;
+        }
+        .chat-title {
+          max-width: 160px;
+          font-size: 13px;
+        }
+        .chat-header {
+          height: 72px;
+          min-height: 72px;
+          padding: 0 12px;
+        }
+        .header-actions .icon-btn {
+          width: 29px;
+        }
+        .header-actions {
+          gap: 0;
+        }
+        .chat-subtitle {
+          font-size: 9px;
+        }
+        .message-main,
+        .message.own .message-main {
+          max-width: 83%;
+        }
+        .message {
+          gap: 7px;
+        }
+        .message .avatar {
+          width: 25px;
+          height: 25px;
+          border-radius: 8px;
+        }
+        .messages {
+          padding: 20px 13px 12px;
+        }
+        .message-actions {
+          opacity: 1;
+          width: 20px;
+          height: 20px;
+          background: #ffffff65;
+        }
+        .message-line {
+          gap: 5px;
+        }
+        .bubble {
+          font-size: calc(var(--font) - 2px);
+          padding: 9px 11px;
+        }
+        .message-meta {
+          font-size: 7px;
+          min-width: 22px;
+        }
+        .image-collage {
+          width: 225px;
+          height: 125px;
+        }
+        .detail-profile {
+          padding-top: 20px;
+        }
+        .body-split.show-details .details {
+          top: 109px;
+          width: 270px;
+        }
+        .composer-toolbar .toolbar-end {
+          display: none;
+        }
+        .composer textarea {
+          font-size: calc(var(--font) - 1px);
+        }
+        .composer-hint {
+          font-size: 8px;
+        }
+        .attachment {
+          min-width: 180px;
+        }
+        .file-name {
+          font-size: 10px;
+          max-width: 145px;
+        }
+        .modal {
+          padding: 21px;
+        }
+        .modal-head h2 {
+          font-size: 17px;
+        }
+        .overlay {
+          padding: 15px;
+        }
+        .sticker-grid {
+          gap: 6px;
+        }
+        .sticker-tile svg {
+          height: 65px;
+        }
+        .friend-grid {
+          grid-template-columns: 1fr;
+        }
+        .rail .rail-self {
+          display: none;
+        }
+        .presentation {
+          height: 54px;
+        }
+        .window {
+          height: calc(100dvh - 63px);
+        }
+        .toast {
+          max-width: 90%;
+          bottom: 25px;
+          white-space: nowrap;
+          font-size: 11px;
+        }
+        .composer-toolbar {
+          gap: 11px;
+        }
+        .call-modal {
+          padding: 29px 20px;
+        }
+        .call-controls {
+          gap: 12px;
+        }
+        .lightbox-image {
+          height: 50vh;
+        }
+        .chat-list .chat-row {
+          min-height: 85px;
+          padding-left: 20px;
+          padding-right: 20px;
+        }
+        .side-top {
+          padding-left: 23px;
+          padding-right: 23px;
+        }
+        .side-title h1 {
+          font-size: 23px;
+        }
+        .chat-row .chat-name {
+          font-size: 13px;
+        }
+        .chat-preview {
+          font-size: 11px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="presentation">
+      <div class="wordmark">
+        <strong
+          >LINE Desktop<span
+            style="color: #08b35c; border: 0; padding: 0; font-size: 19px"
+            >.</span
+          ></strong
+        ><span>通訊，簡單一點。</span>
+      </div>
+      <div class="demo-pill"><i></i>互動展示</div>
+    </header>
+    <main class="window" aria-label="LINE 桌面版互動展示">
+      <div class="titlebar">
+        <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="titlebar-name">LINE</div>
+        <div class="titlebar-end">桌面版體驗</div>
+      </div>
+      <div class="app" id="app">
+        <nav class="rail" aria-label="主要導覽">
+          <div class="line-logo" aria-label="LINE"><span>LINE</span></div>
+          <div id="nav-main"></div>
+          <div class="rail-spacer"></div>
+          <button
+            class="rail-btn"
+            data-action="help"
+            aria-label="使用說明"
+            title="使用說明"
+          >
+            <span data-icon="help"></span></button
+          ><button
+            class="rail-btn"
+            data-action="settings"
+            aria-label="設定"
+            title="設定"
+          >
+            <span data-icon="settings"></span></button
+          ><button
+            class="rail-self"
+            data-action="self-profile"
+            aria-label="我的個人檔案"
+          ></button>
+        </nav>
+        <aside class="sidebar">
+          <div class="side-top">
+            <div class="side-title">
+              <h1 id="side-title">聊天</h1>
+              <div class="side-buttons" id="side-buttons"></div>
+            </div>
+            <label class="searchbox"
+              ><span data-icon="search" data-size="15"></span
+              ><input
+                id="list-search"
+                type="search"
+                autocomplete="off"
+                placeholder="搜尋好友或聊天室"
+                aria-label="搜尋好友或聊天室"
+            /></label>
+            <div class="filter-row" id="filters"></div>
+          </div>
+          <div class="chat-list scrollbar" id="chat-list"></div>
+          <div class="side-footer"><i></i>每一段對話，都在這裡。</div>
+        </aside>
+        <section class="workspace" aria-label="主要內容">
+          <header class="chat-header" id="chat-header"></header>
+          <div class="body-split" id="body-split">
+            <section
+              class="conversation"
+              id="conversation"
+              aria-label="聊天對話"
+            >
+              <div class="conversation-search" id="conversation-search">
+                <label class="searchbox"
+                  ><span data-icon="search" data-size="15"></span
+                  ><input
+                    type="search"
+                    id="message-search"
+                    placeholder="搜尋這段對話"
+                    aria-label="搜尋這段對話" /></label
+                ><span class="search-count" id="search-count"></span
+                ><button
+                  class="icon-btn"
+                  data-action="close-search"
+                  aria-label="關閉搜尋"
+                >
+                  <span data-icon="x"></span>
+                </button>
+              </div>
+              <div
+                class="messages scrollbar"
+                id="messages"
+                aria-live="polite"
+                aria-label="訊息"
+              ></div>
+              <div class="composer" id="composer">
+                <div id="reply-composer"></div>
+                <div class="composer-toolbar">
+                  <button
+                    class="icon-btn"
+                    data-action="stickers"
+                    title="貼圖與表情符號"
+                    aria-label="貼圖與表情符號"
+                  >
+                    <span data-icon="smile"></span></button
+                  ><button
+                    class="icon-btn"
+                    data-action="pick-photo"
+                    title="傳送照片"
+                    aria-label="傳送照片"
+                  >
+                    <span data-icon="image"></span></button
+                  ><button
+                    class="icon-btn"
+                    data-action="pick-file"
+                    title="傳送檔案"
+                    aria-label="傳送檔案"
+                  >
+                    <span data-icon="file"></span></button
+                  ><button
+                    class="icon-btn"
+                    data-action="screenshot"
+                    title="擷取畫面（模擬）"
+                    aria-label="擷取畫面（模擬）"
+                  >
+                    <span data-icon="crop"></span></button
+                  ><button
+                    class="icon-btn"
+                    data-action="keep"
+                    title="Keep 筆記"
+                    aria-label="Keep 筆記"
+                  >
+                    <span data-icon="bookmark"></span></button
+                  ><span class="toolbar-end">讓日常，保持聯繫</span>
+                </div>
+                <div class="composer-input-row">
+                  <textarea
+                    id="message-input"
+                    placeholder="輸入訊息，分享今天的大小事…"
+                    aria-label="輸入訊息"
+                    maxlength="5000"
+                    rows="2"
+                  ></textarea
+                  ><button
+                    class="send"
+                    data-action="send"
+                    id="send-button"
+                    aria-label="傳送訊息"
+                    title="傳送訊息"
+                    disabled
+                  >
+                    <span data-icon="send" data-size="17"></span>
+                  </button>
+                </div>
+                <div class="composer-hint">
+                  <span id="enter-hint">Enter 傳送 · Shift + Enter 換行</span
+                  ><span>本機示範 · 不會實際傳送</span>
+                </div>
+              </div>
+              <div class="drag-overlay" id="drag-overlay">
+                放開檔案，分享此刻的小美好。
+              </div>
+            </section>
+            <aside
+              class="details scrollbar"
+              id="details"
+              aria-label="聊天室詳細資訊"
+            ></aside>
+          </div>
+          <section class="alternate scrollbar" id="alternate"></section>
+        </section>
+      </div>
+    </main>
+    <div id="modal-root"></div>
+    <div id="popover-root"></div>
+    <div id="toast-root" role="status" aria-live="polite"></div>
+    <input type="file" id="file-input" multiple hidden /><input
+      type="file"
+      id="photo-input"
+      multiple
+      accept="image/*"
+      hidden
+    /><input type="file" id="album-input" multiple accept="image/*" hidden />
+    <script>
+      "use strict";
+      const $ = (s, root = document) => root.querySelector(s);
+      const esc = (value) =>
+        String(value ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+      const iconPaths = {
+        chat: '<path d="M20 11.3a8 8 0 0 1-8.2 7.8 10.3 10.3 0 0 1-3.4-.6L4 20l.8-4.1A7.2 7.2 0 0 1 3.5 11c0-4.3 3.7-7.8 8.3-7.8S20 6.9 20 11.3Z"/><path d="M7.7 10.9h.1m4 0h.1m4 0h.1"/>',
+        friends:
+          '<circle cx="9" cy="7.5" r="3.2"/><path d="M2.7 20v-2.2a6.3 6.3 0 0 1 12.6 0V20M16 4.7a3.2 3.2 0 0 1 0 6.2M18 14a5 5 0 0 1 3 4.8V20"/>',
+        phone:
+          '<path d="m7.7 3 2.1 4.5-2.2 2.4a15 15 0 0 0 6.7 6.7l2.4-2.2 4.3 2.2c-.2 2.5-1.4 4.4-3.8 4.4C10.8 21 3 13.2 3 6.8 3 4.4 5.1 3.1 7.7 3Z"/>',
+        video:
+          '<rect x="2.5" y="5.5" width="13" height="13" rx="3"/><path d="m15.5 10 6-3v10l-6-3"/>',
+        bookmark: '<path d="M6 3h12v18l-6-4-6 4V3Z"/><path d="M9 8h6m-6 4h6"/>',
+        help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 8.8a2.5 2.5 0 1 1 4 2c-1.3.8-1.6 1.4-1.6 2.7M12 17h.01"/>',
+        settings:
+          '<path d="m9.7 3-.7 2.2-2.2 1-2.3-.4L2.9 8.6l1.5 1.8v2.5L3 14.7l1.7 2.8 2.2-.4 2.2 1 .7 2.2h3.3l.7-2.2 2.2-1 2.3.4 1.7-2.8-1.5-1.8v-2.5l1.5-1.8-1.7-2.8-2.3.4-2.2-1-.7-2.2H9.7Z"/><circle cx="11.4" cy="11.7" r="3.1"/>',
+        search:
+          '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+        plus: '<path d="M12 4v16M4 12h16"/>',
+        edit: '<path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14v6Z"/>',
+        chevron: '<path d="m9 5 7 7-7 7"/>',
+        back: '<path d="m15 5-7 7 7 7"/>',
+        x: '<path d="m6 6 12 12M6 18 18 6"/>',
+        more: '<circle cx="5" cy="12" r=".8"/><circle cx="12" cy="12" r=".8"/><circle cx="19" cy="12" r=".8"/>',
+        info: '<circle cx="12" cy="12" r="9"/><path d="M12 10v7m0-10h.01"/>',
+        bell: '<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 7H4c0-1 2-2 2-7ZM9 20h6"/>',
+        belloff:
+          '<path d="m3 3 18 18M9.4 3.6A6 6 0 0 1 18 9c0 2.1.4 3.5.9 4.5M6 6.5A6 6 0 0 0 6 9c0 5-2 6-2 7h12M9 20h6"/>',
+        pin: '<path d="m9 3 12 12-5-1-4 4-1-5-6-6 4-4ZM11 13l-8 8M13 7l4-4"/>',
+        image:
+          '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m4 17 5-5 4 4 3-3 5 5"/>',
+        file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z"/><path d="M14 3v6h6M8 13h8m-8 4h5"/>',
+        smile:
+          '<circle cx="12" cy="12" r="9"/><path d="M8 14a4 4 0 0 0 8 0M8 9h.01M16 9h.01"/>',
+        crop: '<path d="M7 3v14h14M3 7h14v14M3 3l18 18"/>',
+        send: '<path d="m3 3 19 9-19 9 4-9-4-9Zm4 9h15"/>',
+        download: '<path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>',
+        check: '<path d="m5 12 4 4L20 5"/>',
+        mic: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 10a6.5 6.5 0 0 0 13 0M12 17v4m-4 0h8"/>',
+        speaker:
+          '<path d="m3 9 5 0 5-5v16l-5-5H3V9Zm13-1a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
+        monitor:
+          '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17v4m-5 0h10m-9-11 4-4 4 4m-4-4v8"/>',
+        heart:
+          '<path d="M20 5.8c-2.5-2.7-6.4-1.7-8 1.1C10.4 4.1 6.5 3.1 4 5.8c-4 4.3 2.6 10.7 8 14.2 5.4-3.5 12-9.9 8-14.2Z"/>',
+        star: '<path d="m12 2 3 6 6.7 1-4.8 4.8 1.1 6.7-6-3.2-6 3.2 1.1-6.7L2.3 9 9 8l3-6Z"/>',
+        reply: '<path d="m9 5-7 7 7 7v-5c6-1 10 0 13 5 0-8-5-11-13-10V5Z"/>',
+        copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 5V3H3v13h2"/>',
+        trash: '<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/>',
+        forward: '<path d="m14 4 7 7-7 7v-5c-6-1-9 0-12 5 0-8 6-11 12-10V4Z"/>',
+        history: '<path d="M3 7V2m0 5h5M3 7a9 9 0 1 1-.5 9M12 7v5l3 2"/>',
+        logout: '<path d="M10 3H4v18h6m5-14 5 5-5 5M8 12h12"/>',
+        folder: '<path d="M3 6h7l2 2h9v12H3V6Z"/>',
+        cloud:
+          '<path d="M6 18a5 5 0 0 1-1-10 7 7 0 0 1 13-1 5.5 5.5 0 0 1 0 11H6Z"/>',
+      };
+      function icon(name, size = 20) {
+        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || iconPaths.chat}</svg>`;
+      }
+      function hydrateIcons(root = document) {
+        root
+          .querySelectorAll("[data-icon]")
+          .forEach(
+            (el) =>
+              (el.innerHTML = icon(
+                el.dataset.icon,
+                Number(el.dataset.size) || 20,
+              )),
+          );
+      }
+      const colors = [
+        ["#ecdccf", "#785b48", "#4b6552"],
+        ["#e7dcc9", "#443d35", "#d9ae78"],
+        ["#dbe6df", "#4e5547", "#829f87"],
+        ["#e4e0ed", "#6e4d45", "#b2a4c3"],
+        ["#e4e9d8", "#6f5d45", "#9db879"],
+        ["#dce7ec", "#454b54", "#83a6ba"],
+      ];
+      function portrait(index = 0) {
+        const [bg, hair, shirt] = colors[index % colors.length];
+        return `<svg viewBox="0 0 80 80" role="img" aria-label="人物插畫頭像"><rect width="80" height="80" fill="${bg}"/><path d="M12 80c0-20 11-31 28-31s29 11 29 31" fill="${shirt}"/><path d="M20 35c0-20 10-26 21-26 16 0 23 11 21 29l-3 14H21Z" fill="${hair}"/><path d="M34 49h13v14H34Z" fill="#e8b99a"/><ellipse cx="41" cy="35" rx="17" ry="21" fill="#f4d3b5"/><path d="M22 30c0-17 8-22 20-22 14 0 23 11 21 23-10 0-16-5-21-12-5 7-11 10-20 11Z" fill="${hair}"/><circle cx="35" cy="36" r="1.25" fill="#6a5142"/><circle cx="48" cy="36" r="1.25" fill="#6a5142"/><path d="M38 45q4 3 8-1" fill="none" stroke="#b27c69" stroke-width="1.3" stroke-linecap="round"/>${index % 3 === 1 ? '<g fill="none" stroke="#6f6758" stroke-width="1.5"><rect x="27" y="31" width="12" height="10" rx="4"/><rect x="44" y="31" width="12" height="10" rx="4"/><path d="M39 35h5"/></g>' : ""}<path d="m29 60 12 10 12-10" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="2"/></svg>`;
+      }
+      function scene(type = "mountain") {
+        if (type === "coffee")
+          return `<svg viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice" role="img" aria-label="咖啡與暖陽插畫"><rect width="200" height="150" fill="#d9c5a0"/><rect x="130" width="70" height="110" fill="#b8c8a6"/><path d="M130 0v110m35-110v110M130 45h70" stroke="#f8f1dc" stroke-width="7"/><path d="M0 105h200v45H0" fill="#9f7f58"/><ellipse cx="82" cy="128" rx="49" ry="8" fill="#705d4440"/><ellipse cx="79" cy="116" rx="39" ry="9" fill="#e8dfca"/><path d="M50 72h59l-5 33c-2 17-46 17-49 0Z" fill="#fbf6e8"/><path d="M109 78c28-3 25 27-2 24" fill="none" stroke="#f5efdf" stroke-width="8"/><ellipse cx="79" cy="72" rx="30" ry="9" fill="#e4dac6"/><ellipse cx="79" cy="72" rx="24" ry="6" fill="#775843"/><path d="M72 44c-10-11 10-13 1-25m15 27c-10-11 10-13 1-25" stroke="#f8f3dc" fill="none" stroke-width="3" stroke-linecap="round"/><path d="M20 50c-6-15 0-25 6-30 6 16 4 26-6 30Z" fill="#71855a"/></svg>`;
+        if (type === "trail")
+          return `<svg viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice" role="img" aria-label="林間步道插畫"><rect width="200" height="150" fill="#b6ccad"/><path d="M0 100 65 40l45 60 55-78 35 66v62H0" fill="#8eae88"/><path d="M102 150c-50-45 28-49-3-72 54 24-30 37 51 72" fill="#d7c69e"/><g stroke="#607d58" stroke-width="7"><path d="M20 0v140M65 0v100M165 0v140M192 0v150"/></g><g fill="#6c8c62"><ellipse cx="20" cy="22" rx="37" ry="50"/><ellipse cx="66" cy="3" rx="29" ry="50"/><ellipse cx="163" cy="10" rx="40" ry="51"/><ellipse cx="191" cy="48" rx="25" ry="45"/></g><g fill="#d5e0a8" opacity=".6"><circle cx="96" cy="41" r="6"/><circle cx="119" cy="62" r="4"/><circle cx="87" cy="80" r="3"/></g></svg>`;
+        return `<svg viewBox="0 0 270 220" preserveAspectRatio="xMidYMid slice" role="img" aria-label="陽明山草原與遠山插畫"><rect width="270" height="220" fill="#c8dfde"/><circle cx="209" cy="43" r="17" fill="#f7e9b9"/><path d="M-20 118 59 35l62 70 56-58 103 86v87H0" fill="#94b4a3"/><path d="m38 58 21-23 30 34-28-11-9 7Z" fill="#d4e2d7"/><path d="M-20 141 74 74l85 80 52-59 82 59v66H0" fill="#6e9b7d"/><path d="M-20 181c85-77 178-56 310-17v66H0" fill="#a7bb7c"/><path d="M0 186c110-44 148 42 270-2v36H0" fill="#8eab6c"/><path d="M107 220c-4-34 42-39 25-63 31 23 1 41 10 63" fill="#dfcfaa"/><g stroke="#6f8852" stroke-width="1.3"><path d="m24 188 2-18m-2 12-6-6m7 0 5-7m180 30 2-18m-2 12-6-6m7 0 5-7"/></g><path d="M55 27h20m-10-4v8" stroke="#f3f7ec" stroke-width="2" stroke-linecap="round" opacity=".7"/></svg>`;
+      }
+      const moods = [
+        "出發！",
+        "收到 ♡",
+        "好期待",
+        "謝謝你",
+        "早安",
+        "一起加油",
+        "哈哈哈",
+        "晚安",
+      ];
+      function bear(index = 0) {
+        const mood = index % 8;
+        return `<svg viewBox="0 0 150 135" role="img" aria-label="小熊貼圖：${moods[mood]}"><g transform="translate(0,5)">${mood === 2 || mood === 1 ? '<path d="M116 28c-9-14-21-2-12 7l12 10 12-10c9-9-3-21-12-7" fill="#e6a29a"/>' : ""}${mood === 4 ? '<g stroke="#dbc47d" stroke-width="2"><circle cx="119" cy="20" r="9" fill="#f3db97"/><path d="M119 5V0m15 20h5m-20 15v5m-15-20h-5"/></g>' : ""}${mood === 7 ? '<path d="M119 6c-20 12-8 31 7 25-20 25-43-13-7-25Z" fill="#dfcd8c"/><text x="111" y="50" fill="#a8b5a0" font-size="13" font-family="sans-serif">z z</text>' : ""}<ellipse cx="74" cy="102" rx="37" ry="7" fill="#657a5320"/><ellipse cx="73" cy="80" rx="28" ry="30" fill="#b89d7f"/><ellipse cx="73" cy="81" rx="17" ry="22" fill="#ead9bd"/><circle cx="45" cy="28" r="13" fill="#b89d7f"/><circle cx="100" cy="28" r="13" fill="#b89d7f"/><circle cx="45" cy="28" r="7" fill="#e0c6a6"/><circle cx="100" cy="28" r="7" fill="#e0c6a6"/><ellipse cx="73" cy="48" rx="37" ry="30" fill="#c1a687"/><ellipse cx="73" cy="59" rx="19" ry="14" fill="#f0e2cc"/>${mood === 6 ? '<path d="m51 45 6-4 6 4m20 0 6-4 6 4" fill="none" stroke="#594a3d" stroke-width="2.5" stroke-linecap="round"/>' : mood === 7 ? '<path d="M52 46q5 4 10 0m21 0q5 4 10 0" fill="none" stroke="#594a3d" stroke-width="2" stroke-linecap="round"/>' : '<ellipse cx="57" cy="45" rx="2.4" ry="3.3" fill="#594a3d"/><ellipse cx="89" cy="45" rx="2.4" ry="3.3" fill="#594a3d"/>'}<ellipse cx="73" cy="54" rx="4" ry="3" fill="#594a3d"/><path d="M73 56v5m-7-1q7 8 14 0" stroke="#715746" stroke-width="1.6" fill="none" stroke-linecap="round"/><ellipse cx="48" cy="57" rx="6" ry="3.7" fill="#dfaa92"/><ellipse cx="98" cy="57" rx="6" ry="3.7" fill="#dfaa92"/><path d="M48 79 30 ${mood === 0 || mood === 5 ? "54" : "84"}M98 79l19 ${mood === 0 || mood === 5 ? "-25" : "5"}" stroke="#b89d7f" stroke-width="13" stroke-linecap="round"/><path d="m57 101-6 6m39-6 6 6" stroke="#b89d7f" stroke-width="13" stroke-linecap="round"/>${mood === 0 ? '<path d="M17 30h15m-10-8 10 8-10 8" stroke="#86ad78" fill="none" stroke-width="3" stroke-linecap="round"/>' : ""}</g><text x="75" y="132" fill="#778967" text-anchor="middle" font-size="14" font-weight="600" font-family="sans-serif" letter-spacing="1">${moods[mood]}</text></svg>`;
+      }
+      function groupPicture() {
+        return `<svg viewBox="0 0 80 80" role="img" aria-label="散步群組插畫"><rect width="80" height="80" fill="#dfead5"/><circle cx="61" cy="20" r="8" fill="#f2dfa5"/><path d="m-7 64 32-37 26 30 14-22 23 29v16H0" fill="#a6bf8c"/><path d="M5 80V62c10-13 21-11 27 1l3 17" fill="#6f9672"/><path d="m31 80 2-20c8-14 23-12 30 2l3 18" fill="#8da879"/><circle cx="19" cy="45" r="11" fill="#f0d7b9"/><circle cx="48" cy="43" r="12" fill="#f2d5b2"/><path d="M8 44c-1-18 23-19 23 1-8 0-12-6-12-6-3 5-7 5-11 5Z" fill="#655a45"/><path d="M36 40c0-16 26-16 25 4-10-1-13-8-13-8-3 5-8 5-12 4Z" fill="#7a654b"/><path d="m17 48 1 0m5 0h1m21-2h1m6 0h1" stroke="#6e5743" stroke-width="2" stroke-linecap="round"/><path d="M62 80c-1-11-5-14-7-19" stroke="#e7dfbd" stroke-width="3"/></svg>`;
+      }
+      let sequence = 100;
+      const uid = () => `id${++sequence}`;
+      const contacts = [
+        {
+          id: "me",
+          name: "林以安",
+          status: "把日子過成喜歡的樣子。",
+          portrait: 0,
+          favorite: false,
+        },
+        {
+          id: "yiting",
+          name: "陳怡庭",
+          status: "山裡見，咖啡店也見。",
+          portrait: 1,
+          favorite: true,
+        },
+        {
+          id: "hao",
+          name: "林子豪",
+          status: "今天也想出去走走。",
+          portrait: 2,
+          favorite: true,
+        },
+        {
+          id: "momo",
+          name: "Momo",
+          status: "生活的靈感收集中 ✨",
+          portrait: 3,
+          favorite: false,
+        },
+        {
+          id: "jia",
+          name: "嘉嘉",
+          status: "慢慢來，比較快。",
+          portrait: 4,
+          favorite: false,
+        },
+        {
+          id: "kai",
+          name: "許凱文",
+          status: "設計是生活的練習。",
+          portrait: 5,
+          favorite: false,
+        },
+      ];
+      const msg = (
+        id,
+        sender,
+        text,
+        time = "10:24",
+        kind = "text",
+        extra = {},
+      ) => ({ id, sender, text, time, kind, ...extra });
+      const noteSeed = {
+        id: "note1",
+        title: "週六，我們去山裡呼吸 🌿",
+        body: "集合時間｜11/7（六）09:30\n集合地點｜捷運劍潭站 1 號出口\n\n帶上水、薄外套和一點好心情。\n步道走完，再找間小店喝咖啡。\n下雨就改成城市散步！",
+        author: "yiting",
+        pinned: true,
+        likes: 2,
+        liked: false,
+      };
+      function makeChat(id, title, members, type = "direct", extra = {}) {
+        return {
+          id,
+          title,
+          members,
+          type,
+          messages: [],
+          notes: [],
+          albums: [],
+          draft: "",
+          reply: null,
+          pinned: false,
+          muted: false,
+          unread: 0,
+          ...extra,
+        };
+      }
+      const chats = {
+        weekend: makeChat(
+          "weekend",
+          "週末散步計畫",
+          ["me", "yiting", "hao", "momo"],
+          "group",
+          {
+            pinned: true,
+            messages: [
+              msg(
+                "w1",
+                "yiting",
+                "這週六天氣好像很不錯 ☀️\n我們去陽明山走走，好不好？",
+                "10:18",
+              ),
+              msg("w2", "hao", "好啊！想念山上的空氣了 🌿", "10:20"),
+              msg("w3", "yiting", "找到幾個很喜歡的地方！", "10:21", "collage"),
+              msg(
+                "w4",
+                "me",
+                "光看照片就開始期待了！\n走完再去喝杯咖啡吧 ☕",
+                "10:23",
+              ),
+              msg("w5", "momo", "我把路線整理好了，大家可以先看看", "10:24"),
+              msg("w6", "momo", "散步路線提案.pdf", "10:24", "file", {
+                name: "散步路線提案.pdf",
+                size: 2468,
+                sample: true,
+              }),
+              msg("w7", "hao", "", "10:26", "sticker", { sticker: 0 }),
+            ],
+            notes: [noteSeed],
+            albums: [
+              {
+                id: "album1",
+                title: "想去的地方",
+                photos: [
+                  { scene: "mountain" },
+                  { scene: "trail" },
+                  { scene: "coffee" },
+                ],
+                date: "今天",
+              },
+            ],
+          },
+        ),
+        yiting: makeChat("yiting", "陳怡庭", ["me", "yiting"], "direct", {
+          pinned: true,
+          unread: 2,
+          messages: [
+            msg("y1", "yiting", "下次去這家咖啡店吧 ☕", "09:42"),
+            msg("y2", "yiting", "聽說他們的肉桂捲很好吃！", "09:42"),
+          ],
+        }),
+        design: makeChat(
+          "design",
+          "日常設計研究所",
+          ["me", "kai", "momo"],
+          "group",
+          {
+            unread: 5,
+            messages: [
+              msg(
+                "d1",
+                "kai",
+                "新的版面我放在筆記本了，大家有空幫我看看～",
+                "09:16",
+              ),
+            ],
+            notes: [
+              {
+                id: "note2",
+                title: "一點設計靈感",
+                body: "讓留白成為呼吸的地方。\n本週的練習：觀察日常生活中的綠色。",
+                author: "kai",
+                likes: 1,
+                liked: false,
+              },
+            ],
+          },
+        ),
+        family: makeChat(
+          "family",
+          "我們這一家",
+          ["me", "jia", "hao"],
+          "group",
+          {
+            unread: 1,
+            messages: [
+              msg("f1", "jia", "晚上回家吃飯嗎？今天煮了你最愛的湯 🍲", "昨天"),
+            ],
+          },
+        ),
+        hao: makeChat("hao", "林子豪", ["me", "hao"], "direct", {
+          messages: [
+            msg("h1", "me", "沒問題，週末見！", "昨天"),
+            msg("h2", "hao", "收到，週末見 🙌", "昨天"),
+          ],
+        }),
+        momo: makeChat("momo", "Momo", ["me", "momo"], "direct", {
+          messages: [
+            msg("m1", "momo", "謝謝你分享的歌單，好喜歡 🎧", "星期二"),
+          ],
+        }),
+        keep: makeChat("keep", "Keep 筆記", ["me"], "self", {
+          messages: [
+            msg(
+              "k1",
+              "me",
+              "記下生活裡的小靈感 ✍️\n想去的地方、突然想到的點子，都放在這裡。",
+              "星期一",
+            ),
+          ],
+        }),
+      };
+      let settings = {
+        name: "林以安",
+        notifications: true,
+        enterSend: true,
+        fontSize: "14",
+      };
+      try {
+        const saved = JSON.parse(
+          localStorage.getItem("line-demo-settings") || "null",
+        );
+        if (saved && typeof saved === "object") {
+          settings = {
+            name:
+              typeof saved.name === "string"
+                ? saved.name.slice(0, 30)
+                : settings.name,
+            notifications:
+              typeof saved.notifications === "boolean"
+                ? saved.notifications
+                : true,
+            enterSend:
+              typeof saved.enterSend === "boolean" ? saved.enterSend : true,
+            fontSize: ["13", "14", "16"].includes(saved.fontSize)
+              ? saved.fontSize
+              : "14",
+          };
+        }
+      } catch {}
+      contacts[0].name = settings.name;
+      const ui = {
+        section: "chats",
+        chatId: "weekend",
+        filter: "all",
+        listSearch: "",
+        messageSearch: "",
+        detailTab: "info",
+        details: innerWidth > 1150,
+        modal: null,
+        popover: null,
+        selectedSticker: 0,
+        stickerTab: "stickers",
+        pickerChatId: null,
+        lightbox: null,
+      };
+      let call = null;
+      const callHistory = [];
+      const objectURLs = new Set();
+      let toastTimer, callTicker, dialTimer, lastFocus;
+      const contact = (id) => contacts.find((c) => c.id === id) || contacts[0];
+      const currentChat = () => chats[ui.chatId];
+      const clock = () =>
+        new Date().toLocaleTimeString("zh-TW", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+      const fileSize = (n) =>
+        n < 1024
+          ? `${n} B`
+          : n < 1048576
+            ? `${(n / 1024).toFixed(1)} KB`
+            : `${(n / 1048576).toFixed(1)} MB`;
+      function avatar(id, classes = "") {
+        if (id === "weekend" || chats[id]?.type === "group")
+          return `<span class="avatar group ${classes}">${groupPicture()}</span>`;
+        if (id === "keep")
+          return `<span class="avatar ${classes}" style="background:#e6efe1;color:#7d9f70">${icon("bookmark", classes.includes("large") ? 31 : 22)}</span>`;
+        return `<span class="avatar ${classes}">${portrait(contact(id).portrait)}</span>`;
+      }
+      function chatAvatar(c, classes = "") {
+        return avatar(
+          c.type === "direct" ? c.members.find((id) => id !== "me") : c.id,
+          classes,
+        );
+      }
+      function lastPreview(c) {
+        const m = c.messages.at(-1);
+        if (!m) return "開始你們的第一段對話";
+        if (m.retracted) return "已收回訊息";
+        const prefix =
+          c.type === "group"
+            ? `${m.sender === "me" ? "你" : contact(m.sender).name}：`
+            : "";
+        return (
+          prefix +
+          ({
+            text: m.text,
+            sticker: "[貼圖]",
+            collage: "[照片]",
+            image: "[照片]",
+            file: `[檔案] ${m.name}`,
+            call: m.text,
+          }[m.kind] || "訊息")
+        );
+      }
+      function toast(text) {
+        clearTimeout(toastTimer);
+        $("#toast-root").innerHTML = `<div class="toast">${esc(text)}</div>`;
+        toastTimer = setTimeout(() => ($("#toast-root").innerHTML = ""), 3200);
+      }
+      function renderNav() {
+        const items = [
+          ["chats", "chat", "聊天"],
+          ["friends", "friends", "好友"],
+          ["calls", "phone", "通話"],
+          ["keep", "bookmark", "Keep 筆記"],
+        ];
+        $("#nav-main").innerHTML = items
+          .map(
+            ([section, i, label]) =>
+              `<button class="rail-btn ${ui.section === section ? "active" : ""}" data-action="nav" data-section="${section}" aria-label="${label}" title="${label}" ${ui.section === section ? 'aria-current="page"' : ""}>${icon(i, 22)}<span>${label}</span>${section === "chats" && Object.values(chats).some((c) => c.unread) ? '<i class="navdot"></i>' : ""}</button>`,
+          )
+          .join("");
+        $(".rail-self").innerHTML = avatar("me");
+      }
+      function renderSidebar() {
+        const title = {
+          chats: "聊天",
+          friends: "好友",
+          calls: "通話",
+          keep: "聊天",
+        }[ui.section];
+        $("#side-title").textContent = title;
+        $("#side-buttons").innerHTML =
+          ui.section === "friends"
+            ? `<button class="icon-btn" data-action="add-friend" aria-label="加入好友" title="加入好友">${icon("plus", 18)}</button>`
+            : `<button class="icon-btn" data-action="new-group" aria-label="建立群組" title="建立群組">${icon("edit", 18)}</button>`;
+        $("#list-search").placeholder =
+          ui.section === "friends" ? "搜尋好友姓名" : "搜尋好友或聊天室";
+        const filters =
+          ui.section === "friends"
+            ? [
+                ["all", "全部"],
+                ["favorite", "我的最愛"],
+              ]
+            : [
+                ["all", "全部"],
+                ["unread", "未讀"],
+                ["group", "群組"],
+              ];
+        $("#filters").innerHTML = filters
+          .map(
+            ([value, label]) =>
+              `<button class="filter ${ui.filter === value ? "active" : ""}" data-action="filter" data-value="${value}" aria-pressed="${ui.filter === value}">${label}${value === "unread" ? ` <span style="font-size:9px">${Object.values(chats).filter((c) => c.unread).length}</span>` : ""}</button>`,
+          )
+          .join("");
+        renderList();
+      }
+      function renderList() {
+        const query = ui.listSearch.trim().toLowerCase();
+        if (ui.section === "friends") {
+          const rows = contacts.filter(
+            (c) =>
+              c.id !== "me" &&
+              c.name.toLowerCase().includes(query) &&
+              (ui.filter !== "favorite" || c.favorite),
+          );
+          $("#chat-list").innerHTML =
+            `<div class="list-label">好友 <span style="margin-left:auto">${rows.length}</span></div>` +
+            rows
+              .map(
+                (c) =>
+                  `<button class="chat-row" data-action="profile" data-id="${c.id}">${avatar(c.id)}<div class="chat-row-info"><div class="chat-row-head"><span class="chat-name">${esc(c.name)}</span>${c.favorite ? icon("star", 12) : ""}</div><div class="chat-preview">${esc(c.status)}</div></div></button>`,
+              )
+              .join("") +
+            (rows.length
+              ? ""
+              : '<div class="empty">沒有符合的好友<br>試試其他搜尋關鍵字。</div>');
+          return;
+        }
+        const rows = Object.values(chats).filter(
+          (c) =>
+            (c.title.toLowerCase().includes(query) ||
+              c.members.some((id) =>
+                contact(id).name.toLowerCase().includes(query),
+              )) &&
+            (ui.filter !== "unread" || c.unread) &&
+            (ui.filter !== "group" || c.type === "group"),
+        );
+        const row = (c) =>
+          `<button class="chat-row ${c.id === ui.chatId ? "active" : ""}" data-action="select-chat" data-id="${c.id}" aria-label="${esc(c.title)}${c.unread ? `，${c.unread} 則未讀` : ""}">${chatAvatar(c)}<div class="chat-row-info"><div class="chat-row-head"><span class="chat-name">${esc(c.title)}</span><span class="chat-time">${esc(c.messages.at(-1)?.time || "剛剛")}</span></div><div class="chat-row-bottom"><span class="chat-preview">${esc(lastPreview(c))}</span>${c.muted ? icon("belloff", 11) : ""}${c.unread ? `<span class="unread">${c.unread}</span>` : ""}</div></div></button>`;
+        $("#chat-list").innerHTML =
+          (rows.some((c) => c.pinned)
+            ? `<div class="list-label">${icon("pin", 10)} 置頂聊天</div>` +
+              rows
+                .filter((c) => c.pinned)
+                .map(row)
+                .join("")
+            : "") +
+          (rows.some((c) => !c.pinned)
+            ? `<div class="list-label" style="padding-top:19px">所有聊天 <span style="margin-left:auto;letter-spacing:0">${rows.filter((c) => !c.pinned).length}</span></div>` +
+              rows
+                .filter((c) => !c.pinned)
+                .map(row)
+                .join("")
+            : "") +
+          (rows.length
+            ? ""
+            : '<div class="empty">沒有找到聊天室<br>試試其他關鍵字或篩選。</div>');
+      }
+      function renderHeader() {
+        const c = currentChat();
+        $("#chat-header").innerHTML =
+          `<div class="chat-heading"><button class="icon-btn mobile-back" data-action="mobile-back" aria-label="返回聊天列表">${icon("back", 20)}</button>${chatAvatar(c)}<div style="min-width:0"><div class="chat-title">${esc(c.title)}${c.muted ? '<span style="font-size:10px;color:#a8b5aa"> · 已靜音</span>' : ""}</div><div class="chat-subtitle"><i></i>${c.type === "group" ? `${c.members.length} 位成員 · 生活的小事，一起分享` : c.type === "self" ? "只屬於你的私人記事空間" : "你們的每一段日常"}</div></div></div><div class="header-actions"><button class="icon-btn" data-action="conversation-search" aria-label="搜尋對話" title="搜尋對話">${icon("search", 18)}</button>${c.type !== "self" ? `<span class="divider"></span><button class="icon-btn" data-action="audio-call" aria-label="語音通話（模擬）" title="語音通話（模擬）">${icon("phone", 19)}</button><button class="icon-btn" data-action="video-call" aria-label="視訊通話（模擬）" title="視訊通話（模擬）">${icon("video", 20)}</button>` : ""}<span class="divider"></span><button class="icon-btn" data-action="toggle-details" aria-label="聊天室資訊" title="聊天室資訊" aria-expanded="${ui.details}">${icon("info", 19)}</button></div>`;
+      }
+      function attachmentHTML(m) {
+        return `<div class="attachment"><span class="file-icon">${esc((m.name || "FILE").split(".").pop().slice(0, 4).toUpperCase())}</span><div><div class="file-name">${esc(m.name)}</div><div class="file-size">${fileSize(m.size || 0)}${m.sample ? " · 示範 PDF" : ""}</div></div><button class="icon-btn download" data-action="download" data-id="${m.id}" data-chat="${ui.chatId}" aria-label="下載 ${esc(m.name)}" title="下載檔案">${icon("download", 15)}</button></div>`;
+      }
+      function messageHTML(m, c) {
+        if (m.retracted) return `<div class="retracted">你已收回一則訊息</div>`;
+        const own = m.sender === "me";
+        const content =
+          {
+            text: () =>
+              `${m.reply ? `<div class="reply-quote">${esc(m.reply.name)} · ${esc(m.reply.text)}</div>` : ""}${esc(m.text).replace(/\n/g, "<br>")}`,
+            collage: () =>
+              `<button data-action="open-seed-photos" data-chat="${c.id}" aria-label="查看照片" style="padding:0;display:block;width:100%;text-align:left"><div class="image-collage">${scene()}<div class="mini-scenes">${scene("trail")}${scene("coffee")}</div></div><div class="image-caption">一些山裡的風景，還有午後的咖啡 ☕</div></button>`,
+            sticker: () => bear(m.sticker),
+            file: () => attachmentHTML(m),
+            image: () =>
+              `<button data-action="open-image" data-chat="${c.id}" data-id="${m.id}" aria-label="查看 ${esc(m.name || "照片")}" style="padding:0;display:block"><img class="photo-message" src="${esc(m.url)}" alt="${esc(m.name || "上傳的照片")}"></button>`,
+            call: () =>
+              `<div style="display:flex;gap:9px;align-items:center">${icon(m.callKind === "video" ? "video" : "phone", 18)}<span>${esc(m.text)}<br><small style="color:#94a196;font-size:9px">模擬通話</small></span></div>`,
+          }[m.kind]?.() || "";
+        const highlighted =
+          ui.messageSearch &&
+          m.text?.toLowerCase().includes(ui.messageSearch.toLowerCase());
+        return `<div class="message ${own ? "own" : ""}" data-message-id="${m.id}">${!own ? avatar(m.sender) : ""}<div class="message-main">${!own ? `<div class="message-sender">${esc(contact(m.sender).name)}</div>` : ""}<div class="message-line"><div class="bubble ${m.kind === "collage" ? "image-bubble" : ""} ${m.kind === "sticker" ? "sticker-bubble" : ""} ${m.kind === "image" ? "image-bubble" : ""} ${highlighted ? "search-highlight" : ""}">${content}${m.reaction ? `<span class="reaction">${esc(m.reaction)}</span>` : ""}</div><div class="message-meta">${own ? '<div class="read">已讀 ' + (c.members.length - 1 || "") + "</div>" : ""}${esc(m.time)}</div><button class="message-actions" data-action="message-menu" data-id="${m.id}" data-chat="${c.id}" aria-label="訊息操作" title="訊息操作">${icon("more", 15)}</button></div></div></div>`;
+      }
+      function renderMessages(scroll = false) {
+        const c = currentChat();
+        $("#messages").innerHTML =
+          `<div class="date-divider"><span>今天 · 11 月 5 日 星期四</span></div>` +
+          (c.messages.length
+            ? c.messages.map((m) => messageHTML(m, c)).join("")
+            : '<div class="empty">第一句問候，讓故事開始。<br>傳送訊息，分享你的今天。</div>');
+        const matches = c.messages.filter(
+          (m) =>
+            !m.retracted &&
+            m.text?.toLowerCase().includes(ui.messageSearch.toLowerCase()),
+        ).length;
+        $("#search-count").textContent = ui.messageSearch
+          ? `${matches} 則結果`
+          : "";
+        if (scroll)
+          $("#messages").scrollTo({
+            top: $("#messages").scrollHeight,
+            behavior: "instant",
+          });
+      }
+      function renderReply() {
+        const reply = currentChat().reply;
+        $("#reply-composer").innerHTML = reply
+          ? `<div class="reply-composer">${icon("reply", 14)}<span>回覆 ${esc(reply.name)}：${esc(reply.text)}</span><button class="icon-btn" data-action="cancel-reply" aria-label="取消回覆">${icon("x", 13)}</button></div>`
+          : "";
+      }
+      function updateComposer() {
+        const c = currentChat();
+        $("#message-input").value = c.draft;
+        $("#send-button").disabled = !c.draft.trim();
+        $("#enter-hint").textContent = settings.enterSend
+          ? "Enter 傳送 · Shift + Enter 換行"
+          : "Enter 換行 · 點擊箭頭傳送";
+        renderReply();
+      }
+      function noteHTML(n, c) {
+        return `<div class="note-card"><button data-action="open-note" data-id="${n.id}" data-chat="${c.id}" style="padding:0;text-align:left;width:100%">${n.pinned ? `<span class="note-tag">${icon("pin", 9)} 置頂公告</span>` : ""}<h3>${esc(n.title)}</h3><p>${esc(n.body.slice(0, 88))}${n.body.length > 88 ? "…" : ""}</p><div class="note-footer">${avatar(n.author, "small")} ${esc(contact(n.author).name)} · 今天</div></button><div class="note-controls"><button data-action="like-note" data-chat="${c.id}" data-id="${n.id}" style="color:${n.liked ? "#0bad5c" : "#8aa18f"}">♡ ${n.likes || 0}</button>${n.author === "me" ? `<button data-action="edit-note" data-id="${n.id}" data-chat="${c.id}">編輯</button><button data-action="delete-note" data-id="${n.id}" data-chat="${c.id}">刪除</button>` : ""}</div></div>`;
+      }
+      function albumHTML(a, c) {
+        const p = a.photos[0];
+        return `<button class="album-card" data-action="open-album" data-id="${a.id}" data-chat="${c.id}"><div class="album-cover">${p ? (p.scene ? scene(p.scene) : `<img src="${esc(p.url)}" alt="${esc(p.name)}">`) : icon("image", 30)}</div><div class="album-name">${esc(a.title)}<span>${a.photos.length} 張照片 · ${esc(a.date || "今天")}</span></div></button>`;
+      }
+      function renderDetails() {
+        const c = currentChat();
+        const files = c.messages.filter(
+          (m) => m.kind === "file" && !m.retracted,
+        );
+        const media = c.messages.filter(
+          (m) => m.kind === "image" && !m.retracted,
+        );
+        const tabs = [
+          ["info", "資訊"],
+          ["notes", "筆記本"],
+          ["albums", "相簿"],
+          ["files", "檔案"],
+        ];
+        let content = "";
+        if (ui.detailTab === "info") {
+          const n = c.notes.find((n) => n.pinned) || c.notes[0];
+          content = `<div class="section-label">${icon("pin", 12)} <span style="flex:1;margin-left:6px">記事與公告</span><button data-action="detail-tab" data-tab="notes">查看全部 ${icon("chevron", 9)}</button></div>${n ? noteHTML(n, c) : '<div class="subtle" style="margin-bottom:22px">還沒有記事，把重要的小事記下來。</div>'}<div class="section-label">共享的片刻 <button data-action="detail-tab" data-tab="albums">查看全部</button></div><div class="media-grid">${
+            c.albums[0]?.photos
+              .slice(0, 3)
+              .map(
+                (p, index) =>
+                  `<button data-action="open-album" data-id="${c.albums[0].id}" data-chat="${c.id}" data-index="${index}" aria-label="查看相簿照片 ${index + 1}">${p.scene ? scene(p.scene) : `<img src="${esc(p.url)}" alt="${esc(p.name)}">`}</button>`,
+              )
+              .join("") ||
+            media
+              .slice(-3)
+              .map(
+                (m) =>
+                  `<button data-action="open-image" data-id="${m.id}" data-chat="${c.id}" aria-label="查看照片"><img src="${esc(m.url)}" alt="${esc(m.name)}"></button>`,
+              )
+              .join("") ||
+            '<span class="subtle" style="grid-column:span 3">下一個值得收藏的瞬間，等你分享。</span>'
+          }</div><div class="section-label">${c.members.length} 位成員 <button data-action="members">查看</button></div><div class="members-row">${c.members.map((id) => `<button data-action="profile" data-id="${id}" aria-label="${esc(contact(id).name)}" style="padding:0">${avatar(id)}</button>`).join("")}<span>一起，在這裡。</span></div>`;
+        } else if (ui.detailTab === "notes") {
+          content = `<div class="section-label">記下重要的事<button data-action="new-note" aria-label="新增記事">${icon("plus", 16)}</button></div>${c.notes.map((n) => noteHTML(n, c)).join("") || '<div class="empty">還沒有記事<br>記下你們的小小計畫。</div>'}<button class="secondary" style="width:100%" data-action="new-note">＋ 新增記事</button>`;
+        } else if (ui.detailTab === "albums") {
+          content = `<div class="section-label">收藏一起走過的風景</div>${c.albums.map((a) => albumHTML(a, c)).join("") || '<div class="empty">相簿還是空的<br>用照片留下新的故事。</div>'}<button class="secondary" style="width:100%" data-action="new-album">＋ 建立相簿</button>`;
+        } else {
+          content = `<div class="section-label">${files.length} 個共享檔案</div>${files.map((m) => `<div class="detail-file"><span class="file-icon">${esc(m.name.split(".").pop().slice(0, 4).toUpperCase())}</span><div style="flex:1;min-width:0"><div class="file-name">${esc(m.name)}</div><div class="file-size">${fileSize(m.size)}</div></div><button class="icon-btn" data-action="download" data-id="${m.id}" data-chat="${c.id}" aria-label="下載 ${esc(m.name)}">${icon("download", 14)}</button></div>`).join("") || '<div class="empty">還沒有共享檔案<br>從對話中傳送第一個檔案。</div>'}`;
+        }
+        $("#details").innerHTML =
+          `<div class="detail-profile">${chatAvatar(c, "large")}<h2>${esc(c.title)}</h2><p>${c.type === "group" ? `${c.members.length} 位成員 · 在一起的好時光` : c.type === "self" ? "隨手記下，每一個靈感" : esc(contact(c.members.find((id) => id !== "me")).status)}</p></div><div class="quick-actions"><button class="quick-action ${c.muted ? "on" : ""}" data-action="mute"><span class="quick-circle">${icon(c.muted ? "belloff" : "bell", 16)}</span>${c.muted ? "已關閉通知" : "通知"}</button><button class="quick-action ${c.pinned ? "on" : ""}" data-action="pin"><span class="quick-circle">${icon("pin", 16)}</span>${c.pinned ? "已置頂" : "置頂"}</button><button class="quick-action" data-action="conversation-search"><span class="quick-circle">${icon("search", 16)}</span>搜尋</button></div><div class="detail-tabs" role="tablist">${tabs.map(([id, label]) => `<button class="detail-tab ${ui.detailTab === id ? "active" : ""}" data-action="detail-tab" data-tab="${id}" role="tab" aria-selected="${ui.detailTab === id}">${label}</button>`).join("")}</div><div class="detail-content">${content}</div>`;
+        $("#body-split").classList.toggle("show-details", ui.details);
+        $("#details").style.display = ui.details ? "" : "none";
+      }
+      function renderAlternate() {
+        const friends = ui.section === "friends";
+        const backButton =
+          '<button class="text-button mobile-back" data-action="mobile-back" style="margin-bottom:20px;width:auto">← 返回列表</button>';
+        $("#alternate").classList.toggle(
+          "open",
+          friends || ui.section === "calls",
+        );
+        $("#body-split").style.display =
+          friends || ui.section === "calls" ? "none" : "flex";
+        $("#chat-header").style.display =
+          friends || ui.section === "calls" ? "none" : "flex";
+        if (friends) {
+          $("#alternate").innerHTML =
+            `${backButton}<h2 class="view-title">讓聯繫，更靠近。</h2><p class="view-lead">一句簡單的問候，就是一段好日常的開始。</p><div class="friend-grid">${contacts
+              .filter(
+                (c) =>
+                  c.id !== "me" &&
+                  c.name.toLowerCase().includes(ui.listSearch.toLowerCase()) &&
+                  (ui.filter !== "favorite" || c.favorite),
+              )
+              .map(
+                (c) =>
+                  `<div class="friend-card">${avatar(c.id)}<button class="friend-main" data-action="profile" data-id="${c.id}" style="padding:0;text-align:left"><h3>${esc(c.name)}</h3><p>${esc(c.status)}</p></button><button class="icon-btn" data-action="friend-chat" data-id="${c.id}" title="傳送訊息" aria-label="傳送訊息給 ${esc(c.name)}">${icon("chat", 18)}</button></div>`,
+              )
+              .join("")}</div>`;
+        } else if (ui.section === "calls") {
+          $("#alternate").innerHTML =
+            `${backButton}<h2 class="view-title">熟悉的聲音，一直都在。</h2><p class="view-lead">通話紀錄 · 此處所有通話皆為互動模擬。</p>${
+              callHistory.length
+                ? callHistory
+                    .slice()
+                    .reverse()
+                    .map(
+                      (h) =>
+                        `<div class="history-card">${chatAvatar(chats[h.chatId])}<div><h3>${esc(chats[h.chatId].title)}</h3><p>${h.kind === "video" ? "視訊" : "語音"}通話模擬 · ${h.connected ? formatDuration(h.duration) : "未接通"} · ${esc(h.time)}</p></div><button class="icon-btn" data-action="redial" data-chat="${h.chatId}" data-kind="${h.kind}" aria-label="再次撥打 ${esc(chats[h.chatId].title)}" title="再次撥打">${icon(h.kind === "video" ? "video" : "phone", 20)}</button></div>`,
+                    )
+                    .join("")
+                : `<div class="empty" style="padding:70px 0">${icon("phone", 36)}還沒有通話紀錄<br>從好友個人檔案或聊天室，開始一次模擬通話。<br><button class="text-button" data-action="nav" data-section="friends" style="margin-top:15px">選擇好友</button></div>`
+            }`;
+        }
+      }
+      function renderConversation(scroll = false) {
+        renderHeader();
+        renderMessages(scroll);
+        renderDetails();
+        updateComposer();
+        renderAlternate();
+      }
+      function selectChat(id) {
+        if (!chats[id]) return;
+        ui.chatId = id;
+        ui.section = id === "keep" ? "keep" : "chats";
+        ui.messageSearch = "";
+        $("#message-search").value = "";
+        $("#conversation-search").classList.remove("open");
+        chats[id].unread = 0;
+        ui.detailTab = "info";
+        $("#app").classList.add("mobile-chat");
+        renderNav();
+        renderSidebar();
+        renderConversation(true);
+      }
+      function navigate(section) {
+        if (section === "keep") {
+          selectChat("keep");
+          return;
+        }
+        ui.section = section;
+        ui.filter = "all";
+        ui.listSearch = "";
+        $("#list-search").value = "";
+        renderNav();
+        renderSidebar();
+        renderAlternate();
+        if (section === "chats") renderConversation();
+        if (section !== "chats" && matchMedia("(max-width:620px)").matches) {
+          $("#app").classList.add("mobile-chat");
+        }
+      }
+      function sendMessage(chatId, text) {
+        const c = chats[chatId];
+        if (!c || !text.trim()) return;
+        const m = msg(uid(), "me", text.trim(), clock());
+        if (c.reply) m.reply = { ...c.reply };
+        c.messages.push(m);
+        c.draft = "";
+        c.reply = null;
+        renderList();
+        if (ui.chatId === chatId) {
+          renderMessages(true);
+          updateComposer();
+          $("#message-input").focus();
+        }
+      }
+      function openModal(modal) {
+        if (ui.modal?.kind === "files") disposeQueue(ui.modal.files);
+        lastFocus = document.activeElement;
+        ui.modal = modal;
+        renderModal();
+        setTimeout(() => {
+          const el =
+            $("[autofocus]", $("#modal-root")) ||
+            $("input,textarea,select,button", $("#modal-root"));
+          el?.focus();
+        }, 20);
+      }
+      function closeModal() {
+        if (call && ["dialing", "connected"].includes(call.phase)) {
+          toast("請先按掛斷，結束模擬通話。");
+          return;
+        }
+        if (ui.modal?.kind === "files") disposeQueue(ui.modal.files);
+        ui.modal = null;
+        $("#modal-root").innerHTML = "";
+        lastFocus?.focus?.();
+      }
+      function modalShell(title, body, footer = "", wide = false) {
+        return `<div class="overlay" data-overlay="true"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">${title}</h2><button class="icon-btn" data-action="close-modal" aria-label="關閉">${icon("x", 18)}</button></div>${body}${footer}</section></div>`;
+      }
+      function footer(primaryAction, label, secondaryLabel = "取消") {
+        return `<div class="modal-error" id="modal-error" role="alert"></div><div class="modal-actions"><button class="secondary" data-action="close-modal">${secondaryLabel}</button><button class="primary" data-action="${primaryAction}">${label}</button></div>`;
+      }
+      function renderModal() {
+        const m = ui.modal;
+        if (!m) {
+          $("#modal-root").innerHTML = "";
+          return;
+        }
+        let html = "";
+        if (m.kind === "stickers") {
+          html = modalShell(
+            "用表情，說點心裡話。",
+            `<div class="sticker-tabs"><button class="filter ${ui.stickerTab === "stickers" ? "active" : ""}" data-action="sticker-tab" data-tab="stickers">散步小熊</button><button class="filter ${ui.stickerTab === "emoji" ? "active" : ""}" data-action="sticker-tab" data-tab="emoji">表情符號</button></div>${ui.stickerTab === "stickers" ? `<div class="sticker-grid">${moods.map((mood, index) => `<button class="sticker-tile ${ui.selectedSticker === index ? "selected" : ""}" data-action="select-sticker" data-index="${index}" aria-label="預覽 ${mood}">${bear(index)}<span>${mood}</span></button>`).join("")}</div><p class="subtle" style="margin-top:15px">已選擇「${moods[ui.selectedSticker]}」· 原創示範貼圖</p><div class="modal-actions"><button class="secondary" data-action="close-modal">取消</button><button class="primary" data-action="send-sticker">傳送貼圖</button></div>` : `<div class="emoji-grid">${["😊", "🥰", "😂", "😍", "🥺", "😎", "😴", "🙌", "👍", "👏", "💚", "✨", "🌿", "☀️", "☕", "🎉", "🐻", "🌸", "🍰", "🎧", "🚶"].map((e) => `<button data-action="insert-emoji" data-value="${e}" aria-label="插入 ${e}">${e}</button>`).join("")}</div><p class="subtle">選擇表情符號後，會加入訊息輸入框。</p>`}`,
+          );
+        } else if (m.kind === "files") {
+          html = modalShell(
+            m.album ? "加入相簿照片" : "準備好分享了嗎？",
+            `<p class="subtle" style="margin-top:-10px;margin-bottom:18px">${m.album ? `相簿「${esc(m.albumTitle)}」` : `傳送至「${esc(chats[m.chatId].title)}」`} · 檔案只會留在本機此分頁。</p><div class="file-queue">${m.files.map((f, index) => `<div class="queue-item">${f.isImage ? `<img src="${esc(f.url)}" alt="${esc(f.name)}">` : `<span class="file-icon">${esc(f.name.split(".").pop().slice(0, 4).toUpperCase())}</span>`}<div class="queue-name">${esc(f.name)}<div class="subtle">${fileSize(f.size)}</div></div><button class="icon-btn" data-action="remove-file" data-index="${index}" aria-label="移除 ${esc(f.name)}">${icon("x", 16)}</button></div>`).join("") || '<div class="empty">尚未選擇檔案。</div>'}</div><div class="modal-actions"><button class="secondary" data-action="close-modal">取消</button><button class="primary" data-action="confirm-files" ${m.files.length ? "" : "disabled"}>${m.album ? "建立相簿" : `傳送 ${m.files.length} 個檔案`}</button></div>`,
+          );
+        } else if (m.kind === "new-group") {
+          html = modalShell(
+            "把喜歡的人，聚在一起。",
+            `<label class="field">群組名稱<input id="group-name" maxlength="40" placeholder="為你們的小天地取個名字" autofocus></label><p class="subtle">選擇群組成員</p>${contacts
+              .filter((c) => c.id !== "me")
+              .map(
+                (c) =>
+                  `<label class="contact-choice">${avatar(c.id, "small")} ${esc(c.name)}<input type="checkbox" name="group-member" value="${c.id}" aria-label="邀請 ${esc(c.name)}"></label>`,
+              )
+              .join("")}`,
+            footer("create-group", "建立群組"),
+          );
+        } else if (m.kind === "profile") {
+          const c = contact(m.id);
+          html = modalShell(
+            "個人檔案",
+            `<div class="profile-card">${avatar(c.id, "large")}<h3>${esc(c.name)}</h3><p>${esc(c.status)}</p>${c.id !== "me" ? `<button class="text-button" data-action="favorite-contact" data-id="${c.id}">${c.favorite ? "★ 已加入我的最愛" : "☆ 加入我的最愛"}</button><div class="modal-actions" style="justify-content:center"><button class="secondary" data-action="profile-call" data-id="${c.id}">${icon("phone", 16)} 語音通話</button><button class="primary" data-action="profile-chat" data-id="${c.id}">傳送訊息</button></div>` : '<button class="primary" data-action="settings">編輯個人資料</button>'}</div>`,
+          );
+        } else if (m.kind === "add-friend") {
+          html = modalShell(
+            "加入一位新朋友。",
+            `<p class="subtle">建立一位本機示範好友，開始新的對話。</p><label class="field">好友名稱<input id="friend-name" maxlength="30" placeholder="例如：小晴" autofocus></label><label class="field">一句自我介紹<input id="friend-status" maxlength="80" placeholder="很高興在這裡遇見你。"></label>`,
+            footer("save-friend", "加入好友"),
+          );
+        } else if (m.kind === "note-edit") {
+          const n = chats[m.chatId].notes.find((n) => n.id === m.id);
+          html = modalShell(
+            n ? "編輯記事" : "記下，值得記得的小事。",
+            `<label class="field">標題<input id="note-title" maxlength="80" value="${esc(n?.title || "")}" placeholder="記事標題" autofocus></label><label class="field">內容<textarea id="note-body" maxlength="5000" placeholder="集合時間、想做的事，或一點生活靈感…">${esc(n?.body || "")}</textarea></label><label class="check-label"><input id="note-pinned" type="checkbox" ${n?.pinned ? "checked" : ""}>置頂為聊天室公告</label>`,
+            footer("save-note", "儲存記事"),
+          );
+        } else if (m.kind === "note-view") {
+          const n = chats[m.chatId].notes.find((n) => n.id === m.id);
+          html = modalShell(
+            esc(n.title),
+            `<p class="subtle">${esc(contact(n.author).name)} · 今天${n.pinned ? " · 置頂公告" : ""}</p><div class="note-detail-body">${esc(n.body)}</div><div class="modal-actions"><button class="secondary" data-action="like-modal-note">${n.liked ? "♥" : "♡"} ${n.likes || 0} 個喜歡</button>${n.author === "me" ? '<button class="primary" data-action="edit-modal-note">編輯記事</button>' : '<button class="primary" data-action="close-modal">知道了</button>'}</div>`,
+          );
+        } else if (m.kind === "note-delete") {
+          html = modalShell(
+            "刪除這則記事？",
+            `<p class="subtle">「${esc(chats[m.chatId].notes.find((n) => n.id === m.id)?.title)}」會從這個聊天室的記事中移除。</p>`,
+            footer("confirm-delete-note", "刪除記事"),
+          );
+        } else if (m.kind === "album-new") {
+          html = modalShell(
+            "收藏，這一刻的風景。",
+            `<label class="field">相簿名稱<input id="album-title" maxlength="50" placeholder="例如：一起走過的山間小路" autofocus></label><div class="drop-zone">${icon("image", 28)}<p>選擇照片，建立你們的新相簿。</p><small>照片只保留在目前分頁。</small></div>`,
+            footer("choose-album-photos", "選擇照片"),
+          );
+        } else if (m.kind === "lightbox") {
+          const photos = m.photos;
+          const p = photos[m.index];
+          html = `<div class="overlay"><section class="modal lightbox" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title" style="font-size:14px">${esc(m.title)}</h2><button class="icon-btn" data-action="close-modal" aria-label="關閉照片">${icon("x", 19)}</button></div><div class="lightbox-image">${p?.scene ? scene(p.scene) : p ? `<img src="${esc(p.url)}" alt="${esc(p.name || m.title)}">` : '<span class="subtle">沒有照片</span>'}</div><div class="lightbox-controls"><button class="icon-btn" data-action="photo-prev" aria-label="上一張" ${photos.length < 2 ? "disabled" : ""}>${icon("back", 20)}</button><span>${m.index + 1} / ${photos.length}</span><button class="icon-btn" data-action="photo-next" aria-label="下一張" ${photos.length < 2 ? "disabled" : ""}>${icon("chevron", 20)}</button></div></section></div>`;
+        } else if (m.kind === "forward") {
+          html = modalShell(
+            "把這則訊息，分享給…",
+            `<div style="max-height:350px;overflow:auto">${Object.values(chats)
+              .filter((c) => c.id !== m.chatId)
+              .map(
+                (c) =>
+                  `<button class="chat-row" data-action="confirm-forward" data-chat="${c.id}" style="border-radius:8px">${chatAvatar(c)}<span style="flex:1;font-size:13px">${esc(c.title)}</span>${icon("chevron", 15)}</button>`,
+              )
+              .join("")}</div>`,
+          );
+        } else if (m.kind === "settings") {
+          const draft = m.draft;
+          html = modalShell(
+            "讓 LINE，更像你。",
+            `<label class="field">顯示名稱<input id="settings-name" value="${esc(draft.name)}" maxlength="30" autofocus></label><div class="toggle-line">訊息通知<button class="toggle ${draft.notifications ? "on" : ""}" data-action="setting-toggle" data-key="notifications" aria-label="訊息通知" aria-pressed="${draft.notifications}"></button></div><div class="toggle-line">按 Enter 傳送訊息<button class="toggle ${draft.enterSend ? "on" : ""}" data-action="setting-toggle" data-key="enterSend" aria-label="按 Enter 傳送訊息" aria-pressed="${draft.enterSend}"></button></div><label class="field" style="margin-top:20px">介面文字大小<select id="settings-font"><option value="13" ${draft.fontSize === "13" ? "selected" : ""}>小</option><option value="14" ${draft.fontSize === "14" ? "selected" : ""}>標準</option><option value="16" ${draft.fontSize === "16" ? "selected" : ""}>大</option></select></label><p class="subtle">設定會保存在此瀏覽器。通知僅控制展示狀態，不會發送系統通知。</p>`,
+            footer("save-settings", "儲存設定", "關閉"),
+          );
+        } else if (m.kind === "help") {
+          html = modalShell(
+            "日常的聯繫，從這裡開始。",
+            `<div class="help-block" style="padding-top:0"><h3>這是一份 LINE 桌面版互動展示</h3><p>這個非官方作品重現聊天體驗。所有訊息、好友與通話均為本機模擬，不會連線至 LINE，也不會傳給其他人。</p></div><div class="help-block"><h3>可以試試這些小事</h3><p>傳送訊息、貼圖和表情符號；拖入檔案並確認傳送；建立群組、記事與相簿。懸停在訊息旁的「⋯」可回覆、複製、回應或收回自己的訊息。也可以撥打一通模擬語音或視訊通話。</p></div><div class="help-block"><h3>只留在這裡的小日常</h3><p>對話、好友、草稿、記事、相簿與檔案只保留於目前分頁，重新整理即重設。選取的檔案不會上傳，下載時使用原始檔案；示範 PDF 會產生一份標示為 Demo 的簡易文件。只有個人設定會保存在目前瀏覽器。</p></div><div class="help-block"><h3>關於桌面版功能</h3><p>擷取畫面為示意插畫，通話不會使用麥克風或攝影機。此展示不提供語音訊息錄製或傳送位置。</p></div><div class="help-block" style="border:0"><h3>官方使用說明</h3><p><a href="https://help.line.me/line/desktop/?contentId=20007005&lang=zh-Hant" target="_blank" rel="noopener noreferrer">傳送訊息與檔案</a><a href="https://help.line.me/line/desktop/pc?contentId=20000270&lang=zh-Hant" target="_blank" rel="noopener noreferrer">語音與視訊通話</a><a href="https://help.line.me/line/desktop/?contentId=20000369&lang=en" target="_blank" rel="noopener noreferrer">好友功能</a></p></div>`,
+            '<div class="modal-actions"><button class="primary" data-action="close-modal">開始聊聊</button></div>',
+            true,
+          );
+        } else if (m.kind === "members") {
+          html = modalShell(
+            `${esc(chats[m.chatId].title)}的成員`,
+            chats[m.chatId].members
+              .map(
+                (id) =>
+                  `<button class="chat-row" data-action="profile" data-id="${id}">${avatar(id)}<span style="flex:1">${esc(contact(id).name)}${id === "me" ? "（你）" : ""}</span>${icon("chevron", 15)}</button>`,
+              )
+              .join(""),
+          );
+        } else if (m.kind === "screenshot") {
+          html = modalShell(
+            "擷取畫面 · 模擬",
+            `<p class="subtle">這張原創風景插畫會作為示範擷取畫面，傳送至「${esc(chats[m.chatId].title)}」。沒有擷取你的螢幕。</p><div style="height:210px;border-radius:9px;overflow:hidden">${scene()}</div>`,
+            footer("send-screenshot", "傳送示範圖片"),
+          );
+        } else if (m.kind === "call") {
+          renderCallModal();
+          return;
+        }
+        $("#modal-root").innerHTML = html;
+      }
+      function disposeQueue(files) {
+        files.forEach((f) => {
+          if (f.url) {
+            URL.revokeObjectURL(f.url);
+            objectURLs.delete(f.url);
+          }
+        });
+      }
+      function queueFiles(files, chatId, album = null) {
+        const selected = Array.from(files);
+        if (!selected.length) return;
+        const accepted = selected
+          .filter(
+            (f) =>
+              f.size <= 50 * 1048576 && (!album || f.type.startsWith("image/")),
+          )
+          .slice(0, 20);
+        if (accepted.length !== selected.length)
+          toast("每次最多 20 個檔案，單檔上限 50 MB；相簿僅接受圖片。");
+        if (!accepted.length) return;
+        const queue = accepted.map((f) => {
+          const url = URL.createObjectURL(f);
+          objectURLs.add(url);
+          return {
+            name: f.name,
+            size: f.size,
+            type: f.type,
+            url,
+            isImage: f.type.startsWith("image/"),
+          };
+        });
+        openModal({
+          kind: "files",
+          chatId,
+          files: queue,
+          album: !!album,
+          albumTitle: album?.title,
+        });
+      }
+      function confirmFiles() {
+        const m = ui.modal;
+        if (m?.kind !== "files" || !m.files.length) return;
+        const files = m.files;
+        m.files = [];
+        if (m.album) {
+          chats[m.chatId].albums.push({
+            id: uid(),
+            title: m.albumTitle,
+            photos: files.map((f) => ({ url: f.url, name: f.name })),
+            date: "今天",
+          });
+          ui.detailTab = "albums";
+          toast("新相簿已收藏這些片刻。");
+        } else {
+          files.forEach((f) =>
+            chats[m.chatId].messages.push(
+              msg(uid(), "me", "", clock(), f.isImage ? "image" : "file", {
+                name: f.name,
+                size: f.size,
+                url: f.url,
+                type: f.type,
+              }),
+            ),
+          );
+          toast(`已在本機傳送 ${files.length} 個檔案`);
+        }
+        closeModal();
+        renderList();
+        if (ui.chatId === m.chatId) {
+          renderMessages(true);
+          renderDetails();
+        }
+      }
+      function downloadMessage(chatId, id) {
+        const m = chats[chatId]?.messages.find((m) => m.id === id);
+        if (!m) return;
+        let url = m.url;
+        let temporary = false;
+        if (m.sample) {
+          url = URL.createObjectURL(
+            new Blob([makeDemoPDF()], { type: "application/pdf" }),
+          );
+          temporary = true;
+        }
+        if (!url) return;
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = m.name || "檔案";
+        document.body.append(a);
+        a.click();
+        a.remove();
+        if (temporary) setTimeout(() => URL.revokeObjectURL(url), 30000);
+        toast(
+          m.sample ? "已下載示範 PDF（內容標示為 Demo）" : "已下載原始本機檔案",
+        );
+      }
+      function makeDemoPDF() {
+        const stream =
+          "BT /F1 18 Tf 50 760 Td (Weekend Walk - DEMO) Tj 0 -35 Td /F1 12 Tf (This is a sample document from the LINE Desktop mockup.) Tj 0 -24 Td (Saturday 09:30 - Jiantan Station Exit 1) Tj 0 -24 Td (Bring water, a light jacket, and a good mood.) Tj 0 -40 Td (Offline demo only. No connection to LINE.) Tj ET";
+        const objects = [
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+          `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+        ];
+        let pdf = "%PDF-1.4\n";
+        const offsets = [0];
+        objects.forEach((obj, i) => {
+          offsets.push(pdf.length);
+          pdf += `${i + 1} 0 obj\n${obj}\nendobj\n`;
+        });
+        const start = pdf.length;
+        pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
+          .slice(1)
+          .map((o) => String(o).padStart(10, "0") + " 00000 n \n")
+          .join(
+            "",
+          )}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${start}\n%%EOF`;
+        return pdf;
+      }
+      function ensureDirect(id) {
+        let c = Object.values(chats).find(
+          (c) => c.type === "direct" && c.members.includes(id),
+        );
+        if (!c) {
+          const chatId = uid();
+          c = chats[chatId] = makeChat(chatId, contact(id).name, ["me", id]);
+        }
+        return c.id;
+      }
+      function formatDuration(n) {
+        return `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
+      }
+      function startCall(chatId, kind) {
+        if (call && call.phase !== "ended") {
+          ui.modal = { kind: "call" };
+          renderCallModal();
+          return;
+        }
+        clearInterval(callTicker);
+        clearTimeout(dialTimer);
+        lastFocus = document.activeElement;
+        call = {
+          chatId,
+          kind,
+          phase: "dialing",
+          startedAt: null,
+          muted: false,
+          camera: kind === "video",
+          speaker: true,
+          sharing: false,
+          duration: 0,
+        };
+        ui.modal = { kind: "call" };
+        renderCallModal();
+        dialTimer = setTimeout(() => {
+          if (call?.phase !== "dialing") return;
+          call.phase = "connected";
+          call.startedAt = Date.now();
+          renderCallModal();
+          callTicker = setInterval(() => {
+            if (!call || call.phase !== "connected") return;
+            call.duration = Math.floor((Date.now() - call.startedAt) / 1000);
+            const e = $("#call-status");
+            if (e)
+              e.textContent = `模擬通話中 · ${formatDuration(call.duration)}`;
+          }, 1000);
+        }, 1800);
+      }
+      function renderCallModal() {
+        if (!call) return;
+        const focused = document.activeElement;
+        const focusAction = focused?.closest(".call-modal")
+          ? focused.dataset.action
+          : null;
+        const focusKey = focused?.dataset.key;
+        const active = call.phase !== "ended";
+        const video = call.kind === "video";
+        $("#modal-root").innerHTML =
+          `<div class="overlay"><section class="modal call-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="call-label"><i></i>模擬${video ? "視訊" : "語音"}通話</div>${chatAvatar(chats[call.chatId], "large")}<h2 id="modal-title">${esc(chats[call.chatId].title)}</h2><div class="call-status" id="call-status">${call.phase === "dialing" ? "正在撥號，稍等一下…" : call.phase === "connected" ? `模擬通話中 · ${formatDuration(call.duration)}` : `通話已結束 · ${formatDuration(call.duration)}`}</div>${video && active ? `<div class="call-video-preview">${icon(call.camera ? "video" : "x", 22)} ${call.camera ? "攝影機預覽（模擬畫面）" : "攝影機已關閉（模擬）"}</div>` : ""}${active ? `<div class="call-controls"><button class="call-control ${call.muted ? "off" : ""}" data-action="call-toggle" data-key="muted" aria-pressed="${call.muted}"><span class="circle">${icon("mic", 21)}</span>${call.muted ? "已靜音" : "麥克風"}</button>${video ? `<button class="call-control ${!call.camera ? "off" : ""}" data-action="call-toggle" data-key="camera" aria-pressed="${call.camera}"><span class="circle">${icon("video", 21)}</span>${call.camera ? "攝影機" : "已關閉"}</button><button class="call-control ${call.sharing ? "off" : ""}" data-action="call-toggle" data-key="sharing" aria-pressed="${call.sharing}"><span class="circle">${icon("monitor", 21)}</span>${call.sharing ? "分享中" : "分享螢幕"}</button>` : `<button class="call-control ${!call.speaker ? "off" : ""}" data-action="call-toggle" data-key="speaker" aria-pressed="${call.speaker}"><span class="circle">${icon("speaker", 21)}</span>${call.speaker ? "揚聲器" : "已關閉"}</button>`}<button class="call-control hangup" data-action="hangup"><span class="circle" style="transform:rotate(135deg)">${icon("phone", 23)}</span>掛斷</button></div>` : '<div class="modal-actions" style="justify-content:center"><button class="secondary" data-action="close-modal">關閉</button><button class="primary" data-action="call-again">再撥一次</button></div>'}<div class="call-end-note">這是一場互動模擬。<br>不會使用麥克風、攝影機，也不會連線給其他人。</div></section></div>`;
+        const controls = Array.from(
+          $(".call-modal").querySelectorAll("button"),
+        );
+        const focusTarget =
+          controls.find(
+            (el) =>
+              el.dataset.action === focusAction && el.dataset.key === focusKey,
+          ) || controls[0];
+        focusTarget?.focus({ preventScroll: true });
+      }
+      function endCall() {
+        if (!call || call.phase === "ended") return;
+        clearTimeout(dialTimer);
+        clearInterval(callTicker);
+        const connected = call.phase === "connected";
+        call.phase = "ended";
+        callHistory.push({
+          chatId: call.chatId,
+          kind: call.kind,
+          connected,
+          duration: call.duration,
+          time: clock(),
+        });
+        chats[call.chatId].messages.push(
+          msg(
+            uid(),
+            "me",
+            `${call.kind === "video" ? "視訊" : "語音"}通話${connected ? " " + formatDuration(call.duration) : "未接通"}`,
+            clock(),
+            "call",
+            { callKind: call.kind },
+          ),
+        );
+        renderCallModal();
+        renderList();
+        if (ui.chatId === call.chatId) renderMessages(true);
+        if (ui.section === "calls") renderAlternate();
+      }
+      function showMessageMenu(el) {
+        const c = chats[el.dataset.chat],
+          m = c.messages.find((m) => m.id === el.dataset.id);
+        if (!m) return;
+        ui.popover = { chatId: c.id, messageId: m.id };
+        const options = [
+          ["reply-message", "reply", "回覆"],
+          ...(m.kind === "text" ? [["copy-message", "copy", "複製文字"]] : []),
+          ["react-message", "heart", m.reaction ? "移除回應" : "送出 ♡ 回應"],
+          ["forward-message", "forward", "轉傳"],
+          ...(m.sender === "me" && m.kind === "text"
+            ? [["retract-message", "trash", "收回訊息"]]
+            : []),
+        ];
+        $("#popover-root").innerHTML =
+          `<div class="popover" role="menu">${options.map(([action, i, label]) => `<button data-action="${action}" role="menuitem">${icon(i, 14)}${label}</button>`).join("")}</div>`;
+        const rect = el.getBoundingClientRect(),
+          pop = $(".popover");
+        pop.style.left = Math.min(rect.left, innerWidth - 175) + "px";
+        pop.style.top =
+          Math.max(
+            10,
+            Math.min(rect.bottom + 5, innerHeight - pop.offsetHeight - 12),
+          ) + "px";
+        $("button", pop).focus();
+      }
+      function popMessage() {
+        return ui.popover
+          ? chats[ui.popover.chatId]?.messages.find(
+              (m) => m.id === ui.popover.messageId,
+            )
+          : null;
+      }
+      function closePopover() {
+        $("#popover-root").innerHTML = "";
+      }
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          toast("已複製訊息");
+        } catch {
+          const t = document.createElement("textarea");
+          t.value = text;
+          t.style.position = "fixed";
+          t.style.opacity = "0";
+          document.body.append(t);
+          t.select();
+          const ok = document.execCommand("copy");
+          t.remove();
+          toast(
+            ok ? "已複製訊息" : "此瀏覽器無法自動複製，請選取訊息文字複製。",
+          );
+        }
+      }
+      function saveSettings() {
+        try {
+          localStorage.setItem("line-demo-settings", JSON.stringify(settings));
+        } catch {}
+        document.documentElement.style.setProperty(
+          "--font",
+          settings.fontSize + "px",
+        );
+        document.documentElement.style.setProperty(
+          "--message-font",
+          settings.fontSize + "px",
+        );
+      }
+      const actions = {
+        nav: (el) => navigate(el.dataset.section),
+        "select-chat": (el) => selectChat(el.dataset.id),
+        "mobile-back": () => {
+          $("#app").classList.remove("mobile-chat");
+        },
+        filter: (el) => {
+          ui.filter = el.dataset.value;
+          renderSidebar();
+          if (ui.section === "friends") renderAlternate();
+        },
+        "new-group": () => openModal({ kind: "new-group" }),
+        "create-group": () => {
+          const title = $("#group-name").value.trim();
+          const members = Array.from(
+            document.querySelectorAll('[name="group-member"]:checked'),
+          ).map((i) => i.value);
+          if (!title || !members.length) {
+            $("#modal-error").textContent =
+              "請填寫群組名稱，並選擇至少一位好友。";
+            return;
+          }
+          const id = uid();
+          chats[id] = makeChat(id, title, ["me", ...members], "group");
+          closeModal();
+          selectChat(id);
+          toast("新的小天地，建立好了。");
+        },
+        send: () => sendMessage(ui.chatId, currentChat().draft),
+        "cancel-reply": () => {
+          currentChat().reply = null;
+          renderReply();
+        },
+        "conversation-search": () => {
+          $("#conversation-search").classList.add("open");
+          $("#message-search").focus();
+        },
+        "close-search": () => {
+          ui.messageSearch = "";
+          $("#message-search").value = "";
+          $("#conversation-search").classList.remove("open");
+          renderMessages();
+        },
+        mute: () => {
+          currentChat().muted = !currentChat().muted;
+          renderHeader();
+          renderDetails();
+          renderList();
+          toast(
+            currentChat().muted ? "已關閉此聊天室通知" : "已開啟此聊天室通知",
+          );
+        },
+        pin: () => {
+          currentChat().pinned = !currentChat().pinned;
+          renderDetails();
+          renderList();
+          toast(currentChat().pinned ? "已將聊天置頂" : "已取消置頂");
+        },
+        "detail-tab": (el) => {
+          ui.detailTab = el.dataset.tab;
+          renderDetails();
+        },
+        "toggle-details": () => {
+          ui.details = !ui.details;
+          renderHeader();
+          renderDetails();
+        },
+        keep: () => selectChat("keep"),
+        "self-profile": () => openModal({ kind: "profile", id: "me" }),
+        profile: (el) => openModal({ kind: "profile", id: el.dataset.id }),
+        "favorite-contact": (el) => {
+          contact(el.dataset.id).favorite = !contact(el.dataset.id).favorite;
+          renderModal();
+          renderList();
+          if (ui.section === "friends") renderAlternate();
+        },
+        "friend-chat": (el) => selectChat(ensureDirect(el.dataset.id)),
+        "profile-chat": (el) => {
+          const id = ensureDirect(el.dataset.id);
+          closeModal();
+          selectChat(id);
+        },
+        "profile-call": (el) => {
+          const id = ensureDirect(el.dataset.id);
+          closeModal();
+          startCall(id, "audio");
+        },
+        "add-friend": () => openModal({ kind: "add-friend" }),
+        "save-friend": () => {
+          const name = $("#friend-name").value.trim();
+          if (!name) {
+            $("#modal-error").textContent = "請填寫好友名稱。";
+            return;
+          }
+          contacts.push({
+            id: uid(),
+            name,
+            status: $("#friend-status").value.trim() || "很高興在這裡遇見你。",
+            portrait: contacts.length,
+            favorite: false,
+          });
+          closeModal();
+          renderSidebar();
+          renderAlternate();
+          toast("已加入本機示範好友");
+        },
+        stickers: () => {
+          ui.stickerTab = "stickers";
+          openModal({ kind: "stickers", chatId: ui.chatId });
+        },
+        "sticker-tab": (el) => {
+          ui.stickerTab = el.dataset.tab;
+          renderModal();
+        },
+        "select-sticker": (el) => {
+          ui.selectedSticker = Number(el.dataset.index);
+          renderModal();
+        },
+        "send-sticker": () => {
+          const id = ui.modal.chatId;
+          chats[id].messages.push(
+            msg(uid(), "me", "", clock(), "sticker", {
+              sticker: ui.selectedSticker,
+            }),
+          );
+          closeModal();
+          renderList();
+          if (ui.chatId === id) renderMessages(true);
+        },
+        "insert-emoji": (el) => {
+          const id = ui.modal.chatId,
+            c = chats[id];
+          c.draft = (c.draft + el.dataset.value).slice(0, 5000);
+          closeModal();
+          if (ui.chatId === id) {
+            updateComposer();
+            $("#message-input").focus();
+          }
+        },
+        "pick-file": () => {
+          ui.pickerChatId = ui.chatId;
+          $("#file-input").value = "";
+          $("#file-input").click();
+        },
+        "pick-photo": () => {
+          ui.pickerChatId = ui.chatId;
+          $("#photo-input").value = "";
+          $("#photo-input").click();
+        },
+        "remove-file": (el) => {
+          const [f] = ui.modal.files.splice(Number(el.dataset.index), 1);
+          disposeQueue([f]);
+          renderModal();
+        },
+        "confirm-files": confirmFiles,
+        download: (el) => downloadMessage(el.dataset.chat, el.dataset.id),
+        "new-note": () => openModal({ kind: "note-edit", chatId: ui.chatId }),
+        "edit-note": (el) =>
+          openModal({
+            kind: "note-edit",
+            chatId: el.dataset.chat,
+            id: el.dataset.id,
+          }),
+        "open-note": (el) =>
+          openModal({
+            kind: "note-view",
+            chatId: el.dataset.chat,
+            id: el.dataset.id,
+          }),
+        "save-note": () => {
+          const m = ui.modal,
+            title = $("#note-title").value.trim(),
+            body = $("#note-body").value.trim(),
+            pinned = $("#note-pinned").checked;
+          if (!title || !body) {
+            $("#modal-error").textContent = "請填寫記事標題與內容。";
+            return;
+          }
+          const c = chats[m.chatId];
+          if (pinned) c.notes.forEach((n) => (n.pinned = false));
+          const existing = c.notes.find((n) => n.id === m.id);
+          if (existing) Object.assign(existing, { title, body, pinned });
+          else
+            c.notes.unshift({
+              id: uid(),
+              title,
+              body,
+              pinned,
+              author: "me",
+              likes: 0,
+              liked: false,
+            });
+          closeModal();
+          if (ui.chatId === m.chatId) renderDetails();
+          toast("記事已儲存");
+        },
+        "like-note": (el) => {
+          const n = chats[el.dataset.chat].notes.find(
+            (n) => n.id === el.dataset.id,
+          );
+          n.liked = !n.liked;
+          n.likes = (n.likes || 0) + (n.liked ? 1 : -1);
+          renderDetails();
+        },
+        "like-modal-note": () => {
+          const n = chats[ui.modal.chatId].notes.find(
+            (n) => n.id === ui.modal.id,
+          );
+          n.liked = !n.liked;
+          n.likes = (n.likes || 0) + (n.liked ? 1 : -1);
+          renderModal();
+          renderDetails();
+        },
+        "edit-modal-note": () => openModal({ ...ui.modal, kind: "note-edit" }),
+        "delete-note": (el) =>
+          openModal({
+            kind: "note-delete",
+            chatId: el.dataset.chat,
+            id: el.dataset.id,
+          }),
+        "confirm-delete-note": () => {
+          const m = ui.modal;
+          chats[m.chatId].notes = chats[m.chatId].notes.filter(
+            (n) => n.id !== m.id,
+          );
+          closeModal();
+          renderDetails();
+          toast("記事已刪除");
+        },
+        "new-album": () => openModal({ kind: "album-new", chatId: ui.chatId }),
+        "choose-album-photos": () => {
+          const title = $("#album-title").value.trim();
+          if (!title) {
+            $("#modal-error").textContent = "請為相簿取個名字。";
+            return;
+          }
+          ui.pickerChatId = ui.modal.chatId;
+          ui.pendingAlbum = { chatId: ui.modal.chatId, title };
+          $("#album-input").value = "";
+          $("#album-input").click();
+        },
+        "open-album": (el) => {
+          const a = chats[el.dataset.chat].albums.find(
+            (a) => a.id === el.dataset.id,
+          );
+          if (a?.photos.length)
+            openModal({
+              kind: "lightbox",
+              photos: a.photos,
+              title: a.title,
+              index: Number(el.dataset.index) || 0,
+            });
+          else toast("這個相簿還沒有照片。");
+        },
+        "open-seed-photos": () =>
+          openModal({
+            kind: "lightbox",
+            photos: [
+              { scene: "mountain" },
+              { scene: "trail" },
+              { scene: "coffee" },
+            ],
+            title: "一些想和你分享的風景",
+            index: 0,
+          }),
+        "open-image": (el) => {
+          const m = chats[el.dataset.chat].messages.find(
+            (m) => m.id === el.dataset.id,
+          );
+          openModal({
+            kind: "lightbox",
+            photos: [{ url: m.url, name: m.name }],
+            title: m.name || "共享照片",
+            index: 0,
+          });
+        },
+        "photo-prev": () => {
+          const m = ui.modal;
+          m.index = (m.index + m.photos.length - 1) % m.photos.length;
+          renderModal();
+        },
+        "photo-next": () => {
+          const m = ui.modal;
+          m.index = (m.index + 1) % m.photos.length;
+          renderModal();
+        },
+        members: () => openModal({ kind: "members", chatId: ui.chatId }),
+        "audio-call": () => startCall(ui.chatId, "audio"),
+        "video-call": () => startCall(ui.chatId, "video"),
+        redial: (el) => startCall(el.dataset.chat, el.dataset.kind),
+        hangup: endCall,
+        "call-toggle": (el) => {
+          if (!call || call.phase === "ended") return;
+          call[el.dataset.key] = !call[el.dataset.key];
+          renderCallModal();
+        },
+        "call-again": () => startCall(call.chatId, call.kind),
+        "message-menu": showMessageMenu,
+        "reply-message": () => {
+          const m = popMessage(),
+            id = ui.popover.chatId;
+          chats[id].reply = {
+            id: m.id,
+            name: contact(m.sender).name,
+            text:
+              m.kind === "text"
+                ? m.text
+                : m.kind === "sticker"
+                  ? "[貼圖]"
+                  : m.name || "[照片]",
+          };
+          closePopover();
+          if (ui.chatId !== id) selectChat(id);
+          renderReply();
+          $("#message-input").focus();
+        },
+        "copy-message": () => {
+          const m = popMessage();
+          closePopover();
+          copyText(m.text);
+        },
+        "react-message": () => {
+          const m = popMessage();
+          m.reaction = m.reaction ? "" : "💚";
+          closePopover();
+          renderMessages();
+        },
+        "retract-message": () => {
+          const m = popMessage();
+          if (m.sender === "me" && m.kind === "text") m.retracted = true;
+          closePopover();
+          renderMessages();
+          renderList();
+          toast("已收回這則本機訊息");
+        },
+        "forward-message": () => {
+          const p = ui.popover;
+          closePopover();
+          openModal({ kind: "forward", chatId: p.chatId, id: p.messageId });
+        },
+        "confirm-forward": (el) => {
+          const source = ui.modal;
+          const original = chats[source.chatId].messages.find(
+            (m) => m.id === source.id,
+          );
+          const target = el.dataset.chat;
+          chats[target].messages.push({
+            ...original,
+            id: uid(),
+            sender: "me",
+            time: clock(),
+            reaction: "",
+            reply: null,
+          });
+          closeModal();
+          toast(`已轉傳至「${chats[target].title}」`);
+          renderList();
+          if (ui.chatId === target) renderMessages(true);
+        },
+        settings: () => openModal({ kind: "settings", draft: { ...settings } }),
+        "setting-toggle": (el) => {
+          const draft = ui.modal.draft;
+          draft[el.dataset.key] = !draft[el.dataset.key];
+          el.classList.toggle("on", draft[el.dataset.key]);
+          el.setAttribute("aria-pressed", draft[el.dataset.key]);
+        },
+        "save-settings": () => {
+          const name = $("#settings-name").value.trim();
+          if (!name) {
+            $("#modal-error").textContent = "顯示名稱不能留白。";
+            return;
+          }
+          settings = {
+            ...ui.modal.draft,
+            name,
+            fontSize: $("#settings-font").value,
+          };
+          contacts[0].name = name;
+          saveSettings();
+          closeModal();
+          renderNav();
+          renderHeader();
+          renderMessages();
+          renderDetails();
+          updateComposer();
+          toast("個人設定已儲存");
+        },
+        help: () => openModal({ kind: "help" }),
+        "close-modal": closeModal,
+        screenshot: () => openModal({ kind: "screenshot", chatId: ui.chatId }),
+        "send-screenshot": () => {
+          const id = ui.modal.chatId;
+          const blob = new Blob([scene()], { type: "image/svg+xml" }),
+            url = URL.createObjectURL(blob);
+          objectURLs.add(url);
+          chats[id].messages.push(
+            msg(uid(), "me", "", clock(), "image", {
+              name: "風景擷取畫面（模擬）.svg",
+              size: blob.size,
+              url,
+            }),
+          );
+          closeModal();
+          renderList();
+          if (ui.chatId === id) {
+            renderMessages(true);
+            renderDetails();
+          }
+          toast("已傳送模擬擷取畫面");
+        },
+      };
+      document.addEventListener("click", (event) => {
+        const el = event.target.closest("[data-action]");
+        if (el && !el.disabled) {
+          const action = actions[el.dataset.action];
+          if (action) action(el, event);
+        }
+        if (
+          !event.target.closest(".popover") &&
+          !event.target.closest('[data-action="message-menu"]')
+        )
+          closePopover();
+      });
+      $("#list-search").addEventListener("input", (e) => {
+        ui.listSearch = e.target.value;
+        renderList();
+        if (ui.section === "friends") renderAlternate();
+      });
+      $("#message-input").addEventListener("input", (e) => {
+        currentChat().draft = e.target.value;
+        $("#send-button").disabled = !e.target.value.trim();
+      });
+      $("#message-input").addEventListener("keydown", (e) => {
+        if (
+          e.key === "Enter" &&
+          !e.shiftKey &&
+          !e.isComposing &&
+          e.keyCode !== 229 &&
+          settings.enterSend
+        ) {
+          e.preventDefault();
+          sendMessage(ui.chatId, currentChat().draft);
+        }
+      });
+      $("#message-search").addEventListener("input", (e) => {
+        ui.messageSearch = e.target.value;
+        renderMessages();
+        const hit = $(".search-highlight");
+        if (hit) hit.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+      $("#file-input").addEventListener("change", (e) =>
+        queueFiles(e.target.files, ui.pickerChatId),
+      );
+      $("#photo-input").addEventListener("change", (e) =>
+        queueFiles(e.target.files, ui.pickerChatId),
+      );
+      $("#album-input").addEventListener("change", (e) => {
+        const album = ui.pendingAlbum;
+        if (album) queueFiles(e.target.files, album.chatId, album);
+        ui.pendingAlbum = null;
+      });
+      let dragDepth = 0;
+      const conversation = $("#conversation");
+      conversation.addEventListener("dragenter", (e) => {
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+          dragDepth++;
+          $("#drag-overlay").classList.add("show");
+        }
+      });
+      conversation.addEventListener("dragover", (e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      });
+      conversation.addEventListener("dragleave", (e) => {
+        e.preventDefault();
+        if (--dragDepth <= 0) {
+          dragDepth = 0;
+          $("#drag-overlay").classList.remove("show");
+        }
+      });
+      conversation.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dragDepth = 0;
+        $("#drag-overlay").classList.remove("show");
+        queueFiles(e.dataTransfer.files, ui.chatId);
+      });
+      window.addEventListener("dragover", (e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      });
+      window.addEventListener("drop", (e) => e.preventDefault());
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          if ($(".popover")) {
+            closePopover();
+            return;
+          }
+          if (ui.modal) {
+            closeModal();
+            return;
+          }
+          if ($("#conversation-search").classList.contains("open"))
+            actions["close-search"]();
+        }
+        if (ui.modal && e.key === "Tab") {
+          const els = Array.from(
+            $("#modal-root").querySelectorAll(
+              'button:not([disabled]),a,input,textarea,select,[tabindex="0"]',
+            ),
+          ).filter((el) => el.getClientRects().length);
+          if (!els.length) return;
+          const first = els[0],
+            last = els.at(-1);
+          if (!els.includes(document.activeElement)) {
+            e.preventDefault();
+            (e.shiftKey ? last : first).focus();
+          } else if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+        if (ui.modal?.kind === "lightbox") {
+          if (e.key === "ArrowLeft") actions["photo-prev"]();
+          if (e.key === "ArrowRight") actions["photo-next"]();
+        }
+      });
+      window.addEventListener("beforeunload", () =>
+        objectURLs.forEach((url) => URL.revokeObjectURL(url)),
+      );
+      matchMedia("(min-width:1151px)").addEventListener("change", (e) => {
+        ui.details = e.matches;
+        renderHeader();
+        renderDetails();
+      });
+      saveSettings();
+      hydrateIcons();
+      renderNav();
+      renderSidebar();
+      renderConversation(true);
+    </script>
+  </body>
+</html>
