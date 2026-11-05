@@ -117,6 +117,9 @@ func (b *backend) refreshSnapshot() error {
 		}
 	}
 	b.data.Contacts = contacts
+	b.syncProgress(fmt.Sprintf("正在同步聊天… 已取得 %d 位好友", len(contacts)))
+	debugf("snapshot: %d contacts, %d groups", len(contacts), len(groups.MemberChatMids))
+	boxCount := 0
 	minID := ""
 	for page := 0; page < 100; page++ {
 		boxes, err := c.GetMessageBoxes(line.MessageBoxesOptions{MinChatID: minID, MessageBoxCountLimit: 100, WithUnreadCount: true, LastMessagesPerMessageBoxCount: 1})
@@ -142,6 +145,9 @@ func (b *backend) refreshSnapshot() error {
 			}
 			chats[box.ID] = row
 		}
+		boxCount += len(boxes.MessageBoxes)
+		b.syncProgress(fmt.Sprintf("正在同步聊天… 已讀取 %d 個對話（聊天較多時需要幾分鐘）", boxCount))
+		debugf("snapshot: message boxes page %d, %d chats so far", page+1, boxCount)
 		if !boxes.HasNext || len(boxes.MessageBoxes) == 0 {
 			break
 		}
@@ -499,10 +505,17 @@ func (b *backend) sendText(chatID, text string) (message, error) {
 func isAuthError(err error) bool {
 	return err != nil && (line.IsLoggedOut(err) || line.IsRefreshRequired(err) || line.HTTPStatusCode(err) == 401 || line.HTTPStatusCode(err) == 403)
 }
+// syncProgress tells the login page what the first sync is doing.
+func (b *backend) syncProgress(text string) {
+	if b.state != "ready" {
+		b.emit("auth", map[string]any{"stage": "syncing", "message": text})
+	}
+}
 func (b *backend) handleAuthError(err error) {
 	if !isAuthError(err) || b.session == nil {
 		return
 	}
+	debugf("auth error: %v (logged out by LINE: %v)", err, line.IsLoggedOut(err))
 	if line.IsLoggedOut(err) {
 		b.stop()
 		b.clearData()
@@ -510,6 +523,7 @@ func (b *backend) handleAuthError(err error) {
 		return
 	}
 	if refreshErr := refreshSaved(b.api(), b.session); refreshErr != nil {
+		debugf("auth error: token refresh failed: %v", refreshErr)
 		b.stop()
 		b.clearData()
 		b.sessionEvent("logged_out", "登入已過期，請重新登入。")

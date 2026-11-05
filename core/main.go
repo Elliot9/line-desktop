@@ -118,6 +118,9 @@ func serve(parent context.Context, in io.Reader, out io.Writer, demo bool, store
 				return nil
 			}
 			result, err, done := b.handle(req)
+			if err != nil {
+				debugf("request %s failed: %v", req.Method, err)
+			}
 			if err := b.reply(req.ID, result, err); err != nil {
 				return err
 			}

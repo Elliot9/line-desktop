@@ -3,6 +3,7 @@ import base64
 import datetime
 import json
 from pathlib import Path
+import sys
 import time
 import uuid
 
@@ -13,7 +14,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 
 from . import art
 from .art import Art, EMOJI, MOODS
-from .ipc import Core
+from .ipc import DEBUG, Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
 from .pictures import Pictures
 from .ui import (H, V, Responsive, box, button, chat_avatar, clear, dot, file_badge, file_size,
@@ -100,6 +101,8 @@ class Application(Gtk.Application):
         self.width_class = ""
         self.bubble_chars = 60
         self.demo_note_hidden = False
+        self.login_pending = False
+        self.logging_out = False
         self.dialogs = set()
         self.generation = 0
         self.smoke = {"checks": [], "mode": self.state.mode}
@@ -157,7 +160,7 @@ class Application(Gtk.Application):
             self.core.request("initialize", callback=self.initialized)
         except OSError:
             self.toast("無法啟動 LINE 核心。請先建置程式，或確認 LINE_APP_CORE 指向可執行檔。", True)
-            self.auth_status.set_text("核心尚未啟動。請關閉後重新開啟程式。")
+            self.set_auth_status("核心尚未啟動。請關閉後重新開啟程式。", True)
         if self.options.smoke_test:
             GLib.timeout_add(250, self.smoke_tick)
 
@@ -296,23 +299,29 @@ class Application(Gtk.Application):
         for widget, selected in ((self.qr_tab, name == "qr"), (self.email_tab, name == "email")):
             widget.add_css_class("active") if selected else widget.remove_css_class("active")
 
+    def set_auth_status(self, text, error=False):
+        self.auth_status.set_text(text)
+        self.auth_status.add_css_class("auth-error") if error else self.auth_status.remove_css_class("auth-error")
+
     def start_qr(self):
         if self.core:
+            self.login_pending = True
+            self.set_auth_status("正在取得行動條碼…")
             self.auth_busy(True)
             self.qr_picture.set_visible(False)
             self.qr_placeholder.set_visible(True)
-            self.auth_status.set_text("正在取得行動條碼…")
             self.core.request("login.qr", callback=self.auth_reply)
 
     def start_email(self):
         email = self.email_entry.get_text().strip()
         password = self.password_entry.get_text()
         if not email or not password:
-            self.auth_status.set_text("請輸入電子郵件與密碼。")
+            self.set_auth_status("請輸入電子郵件與密碼。", True)
             return
         if self.core:
+            self.login_pending = True
             self.auth_busy(True)
-            self.auth_status.set_text("正在登入，請稍候…")
+            self.set_auth_status("正在登入，請稍候…")
             self.core.request("login.email", {"email": email, "password": password}, self.auth_reply)
         self.password_entry.set_text("")
 
@@ -325,10 +334,12 @@ class Application(Gtk.Application):
 
     def auth_reply(self, response):
         if not response.get("ok"):
+            self.login_pending = False
             self.auth_busy(False)
-            self.auth_status.set_text(self.error(response))
+            self.set_auth_status(self.error(response), True)
 
     def cancel_auth(self):
+        self.login_pending = False
         self.password_entry.set_text("")
         if self.core:
             self.core.request("login.cancel", callback=self.auth_reply)
@@ -2080,8 +2091,10 @@ class Application(Gtk.Application):
     def logout(self):
         if not self.core:
             return
+        self.logging_out = True
 
         def finished(response):
+            self.logging_out = False
             if not response.get("ok"):
                 self.toast(self.error(response), True)
                 return
@@ -2147,18 +2160,28 @@ class Application(Gtk.Application):
         self.state.chats[KEEP_ID] = self.keep.chat()
 
     def on_event(self, event, data):
+        if DEBUG:
+            print(f"{time.strftime('%H:%M:%S')} line-ui: {event} {data.get('state') or data.get('stage') or ''}", file=sys.stderr, flush=True)
         if event == "session":
             state = data.get("state", "error")
             if state == "logged_out":
+                unexpected = (self.login_pending or self.pages.get_visible_child_name() == "workspace") and not self.logging_out
+                message = data.get("message") or "使用手機 LINE 掃描行動條碼，或以電子郵件登入。"
+                self.login_pending = False
                 self.clear_session()
-                self.auth_status.set_text(data.get("message") or "使用手機 LINE 掃描行動條碼，或以電子郵件登入。")
+                self.set_auth_status(message, unexpected)
+                if unexpected and data.get("message"):
+                    self.toast(message, True)
                 return
             self.state.session = state
             if data.get("profile"):
                 self.state.profile = data["profile"]
             if "persistent" in data and self.state.mode != "demo":
                 self.persistent = bool(data["persistent"])
+            if state == "connecting" and self.pages.get_visible_child_name() == "login" and data.get("message"):
+                self.set_auth_status(data["message"])
             if state == "ready":
+                self.login_pending = False
                 self.pages.set_visible_child_name("workspace")
                 self.auth_busy(False)
                 self.password_entry.set_text("")
@@ -2174,7 +2197,7 @@ class Application(Gtk.Application):
                 self.set_footer("連線已中斷", "error")
                 self.toast(data.get("message", "連線發生錯誤"), True)
                 self.auth_busy(False)
-                self.auth_status.set_text(data.get("message", "請重新登入。"))
+                self.set_auth_status(data.get("message", "請重新登入。"), True)
             self.update_send()
         elif event == "snapshot":
             if self.state.session == "logged_out":
@@ -2225,17 +2248,22 @@ class Application(Gtk.Application):
                     self.qr_picture.set_paintable(texture)
                     self.qr_picture.set_visible(True)
                     self.qr_placeholder.set_visible(False)
-                    self.auth_status.set_text("請使用手機 LINE 掃描上方行動條碼。")
+                    self.set_auth_status("請使用手機 LINE 掃描上方行動條碼。")
                 except (ValueError, GLib.Error):
-                    self.auth_status.set_text("無法顯示行動條碼。請改用電子郵件登入，或重新產生。")
+                    self.set_auth_status("無法顯示行動條碼。請改用電子郵件登入，或重新產生。", True)
                     self.auth_busy(False)
             elif stage == "pin":
                 self.pin_label.set_text(str(data.get("pin", "")))
                 self.pin_label.set_visible(True)
-                self.auth_status.set_text(data.get("message") or "請在手機 LINE 輸入上方驗證碼。")
+                self.set_auth_status(data.get("message") or "請在手機 LINE 輸入上方驗證碼。")
+            elif stage == "syncing":
+                self.pin_label.set_visible(False)
+                self.qr_picture.set_visible(False)
+                self.qr_placeholder.set_visible(True)
+                self.set_auth_status(data.get("message") or "正在同步好友與聊天…")
             elif stage == "error":
                 self.auth_busy(False)
-                self.auth_status.set_text(data.get("message", "登入失敗，請重新嘗試。"))
+                self.set_auth_status(data.get("message", "登入失敗，請重新嘗試。"), True)
 
     def notify(self, message):
         chat_id = str(message.get("chat_id", ""))
@@ -2319,6 +2347,8 @@ class Application(Gtk.Application):
             self.login_view("qr")
             self.on_event("auth", {"stage": "pin", "pin": "1234", "message": "請在手機輸入驗證碼"})
             self.check("PIN view shows verification code", self.pin_label.get_visible() and self.pin_label.get_text() == "1234")
+            self.on_event("auth", {"stage": "syncing", "message": "正在同步聊天… 已讀取 5 個對話"})
+            self.check("sync progress replaces PIN on login page", not self.pin_label.get_visible() and "已讀取 5 個對話" in self.auth_status.get_text())
             self.auth_busy(False)
             self.smoke_phase = 1
         elif step == 1 and self.state.session == "ready" and len(self.state.chats) > 1 and self.state.selected:
@@ -2465,6 +2495,9 @@ class Application(Gtk.Application):
             dialogs = tuple(self.dialogs)
             self.clear_session()
             self.check("logout closes modals and account dialogs", self.modal is None and not self.dialogs and all(not dialog.get_visible() for dialog in dialogs))
+            self.login_pending = True
+            self.on_event("session", {"state": "logged_out", "message": "LINE 已終止此工作階段，請重新登入。"})
+            self.check("failed login is shown as an error", self.auth_status.has_css_class("auth-error") and self.toast_label.get_visible() and "終止" in self.toast_label.get_text())
         finally:
             self.core = real_core
             self.state.mode = real_mode

@@ -7,6 +7,7 @@ import subprocess
 import threading
 
 MAX_ENVELOPE = 2 * 1024 * 1024
+DEBUG = os.environ.get("LINE_APP_DEBUG") == "1"
 
 
 class Core:
@@ -19,7 +20,12 @@ class Core:
         self.closed = False
         self.outgoing = queue.Queue(maxsize=64)
         executable = os.environ.get("LINE_APP_CORE", str(Path(__file__).resolve().parents[1] / "build/line-core"))
-        self.process = subprocess.Popen([executable] + (["--demo"] if demo else []), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        environment = dict(os.environ)
+        if DEBUG:
+            environment["LINE_CORE_DEBUG"] = "1"
+        # In debug mode the core's redacted step log goes to this terminal.
+        self.process = subprocess.Popen([executable] + (["--demo"] if demo else []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=None if DEBUG else subprocess.DEVNULL, env=environment)
         self.reader = threading.Thread(target=self.read, daemon=True, name="line-core-reader")
         self.reader.start()
         self.writer = threading.Thread(target=self.write, daemon=True, name="line-core-writer")

@@ -80,6 +80,18 @@ cd matrix-line
 
 `XDG_DATA_HOME` 有設定時改用 `$XDG_DATA_HOME/matrix-line`。
 
+## 登入或同步有問題時
+
+第一次登入會同步全部好友與聊天，並解密每個聊天的最後一則訊息；聊天較多時需要幾分鐘，登入頁會顯示進度。若失敗，錯誤會以紅字與底部提示顯示。
+
+需要詳細原因時，用除錯模式啟動，終端機會逐步列出登入與同步的每個步驟：
+
+```bash
+LINE_APP_DEBUG=1 ./line-app
+```
+
+使用 Docker 時改在 `docker run` 加上 `-e LINE_APP_DEBUG=1`。紀錄中較長且含數字的字串（token、MID、金鑰）會以 `[redacted]` 取代；分享給他人前仍請自行檢查。
+
 ## 開發與驗證
 
 ```bash

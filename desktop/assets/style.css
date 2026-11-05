@@ -263,6 +263,7 @@ popover.line-popover.flat > contents { box-shadow: none; }
 .login-form { padding: 46px 48px; }
 .qr-box { background: #f8fbf8; border: 1px solid #e6eee7; border-radius: 15px; padding: 20px; }
 .qr-box .art { color: #b8cebd; }
+.auth-error { color: #cf746c; font-size: 11px; }
 .pin { font-size: 30px; color: #008a48; font-weight: 700; letter-spacing: 8px; }
 .fine-print { color: #aab6ad; font-size: 9px; }
 

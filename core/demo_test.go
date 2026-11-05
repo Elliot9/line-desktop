@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/beeper/line/pkg/line"
@@ -54,5 +55,20 @@ func TestDemoSeedMatchesReferenceDesign(t *testing.T) {
 		if !kinds[kind] {
 			t.Fatalf("weekend chat lacks %s message", kind)
 		}
+	}
+}
+
+func TestDebugRedactsTokensAndMIDs(t *testing.T) {
+	mid := "u0123456789abcdef0123456789abcdef"
+	token := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlX2hlcmU"
+	text := redact("login failed for " + mid + " with token " + token + ": HTTP 401")
+	if strings.Contains(text, mid) || strings.Contains(text, "eyJ") || !strings.Contains(text, "HTTP 401") {
+		t.Fatalf("redaction leaked or removed useful text: %q", text)
+	}
+	if kept := redact("Post https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk: EOF"); !strings.Contains(kept, "line-chrome-gw.line-apps.com/api/talk/thrift/Talk") {
+		t.Fatalf("host and path should stay readable: %q", kept)
+	}
+	if long := redact(strings.Repeat("字", 500)); len([]rune(long)) > 401 {
+		t.Fatal("debug lines must be truncated")
 	}
 }

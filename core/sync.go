@@ -44,6 +44,7 @@ func (b *backend) handleStreamEvent(ev workerEvent) {
 	}
 	if ev.kind == "stream_error" {
 		err, _ := ev.data.(error)
+		debugf("stream: disconnected: %v", err)
 		if isAuthError(err) {
 			b.handleAuthError(err)
 			return
@@ -61,6 +62,7 @@ func (b *backend) handleStreamEvent(ev workerEvent) {
 	data := ev.data.(streamData)
 	switch data.event {
 	case line.SSEEventOpen:
+		debugf("stream: connected")
 		b.retryDelay = 0
 		b.sessionEvent("ready", "已連線至 LINE。")
 	case "operation":
