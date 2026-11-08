@@ -133,6 +133,22 @@ class Application(Gtk.Application):
         if self.window:
             self.window.present()
             return
+        # Window/dock icon: the installed launcher icon is named after the
+        # application id; the bundled SVG covers runs without --install-menu.
+        theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        icon_dir = GLib.get_user_cache_dir() + "/matrix-line/icons"
+        try:
+            if self.options.smoke_test:
+                raise OSError("smoke runs use a throwaway application id")
+            Path(icon_dir).mkdir(parents=True, exist_ok=True)
+            target = Path(icon_dir) / f"{self.get_application_id()}.svg"
+            source = (ASSETS / "app-icon.svg").read_bytes()
+            if not target.exists() or target.read_bytes() != source:
+                target.write_bytes(source)
+            theme.add_search_path(icon_dir)
+        except OSError:
+            pass
+        Gtk.Window.set_default_icon_name(self.get_application_id())
         for sheet in ("style.css", "dark.css"):
             provider = Gtk.CssProvider()
             provider.load_from_path(str(ASSETS / sheet))
