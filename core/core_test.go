@@ -59,3 +59,48 @@ func TestStaleAuthCannotRestoreCanceledSession(t *testing.T){
  b.handleEvent(workerEvent{generation:1,kind:"login",data:loginOutcome{session:&savedSession{AccessToken:"stale"}}})
  if b.session!=nil||b.state!="logged_out"{t.Fatal("stale login changed canceled session")}
 }
+
+// A QR/email login while the saved session is still being restored used to
+// wipe the restored session and leave the app stuck "reconnecting".
+func TestLoginRejectedWhileRestoring(t *testing.T) {
+	in, writer := io.Pipe()
+	reader, out := io.Pipe()
+	store := &waitingStore{canceled: make(chan struct{})}
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { done <- serve(ctx, in, out, false, store); out.Close() }()
+	defer reader.Close()
+	defer writer.Close()
+	decoder := json.NewDecoder(reader)
+	call := func(id, method string) map[string]any {
+		t.Helper()
+		if _, err := io.WriteString(writer, `{"id":"`+id+`","method":"`+method+`","params":{}}`+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var envelope map[string]any
+			if err := decoder.Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope["id"] == id {
+				return envelope
+			}
+		}
+	}
+	call("1", "initialize")
+	reply := call("2", "login.qr")
+	errInfo, _ := reply["error"].(map[string]any)
+	if reply["ok"] != false || errInfo["code"] != "restoring" {
+		t.Fatalf("login during restore was not rejected: %v", reply)
+	}
+	// Cancelling the restore must allow logging in again.
+	if reply := call("3", "login.cancel"); reply["ok"] != true {
+		t.Fatalf("cancel failed: %v", reply)
+	}
+	<-store.canceled
+	call("4", "shutdown")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

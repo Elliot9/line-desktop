@@ -186,21 +186,69 @@ func (b *backend) preview(row chat, m message) string {
 	}
 	return m.Text
 }
+
+// fillGroup fetches one group's name, picture and members (live mode only).
+func (b *backend) fillGroup(row *chat) {
+	if b.demo || b.session == nil {
+		return
+	}
+	found, err := b.api().GetChats([]string{row.ID}, true, false)
+	if err != nil || found == nil || len(found.Chats) == 0 {
+		if row.Name == row.ID {
+			row.Name = "群組聊天"
+		}
+		return
+	}
+	g := found.Chats[0]
+	if g.ChatName != "" {
+		row.Name = g.ChatName
+	} else if row.Name == row.ID {
+		row.Name = "群組聊天"
+	}
+	row.Avatar = avatarURL(g.PicturePath)
+	row.Muted = g.NotificationDisabled
+	if g.Extra.GroupExtra != nil {
+		row.MemberCount = len(g.Extra.GroupExtra.MemberMids)
+		row.Members = groupMembers(g.Extra.GroupExtra.MemberMids)
+	}
+}
+
 func (b *backend) refreshSnapshot() error {
 	c := b.api()
 	ids, err := c.GetAllContactIds()
 	if err != nil {
 		return err
 	}
+	blocked := map[string]bool{}
+	if list, err := c.GetBlockedContactIds(); err == nil {
+		for _, id := range list {
+			blocked[id] = true
+		}
+	}
 	contacts := []person{}
 	for start := 0; start < len(ids); start += 100 {
-		found, err := c.GetContactsV2(ids[start:min(start+100, len(ids))])
+		batch := ids[start:min(start+100, len(ids))]
+		found, err := fetchContacts(b.ctx, b.session.AccessToken, batch)
 		if err != nil {
-			return err
+			// Fall back to the library call: it reports token refresh and
+			// logout errors in the form handleAuthError understands.
+			plain, err := c.GetContactsV2(batch)
+			if err != nil {
+				return err
+			}
+			found = found[:0]
+			for _, wrapped := range plain.Contacts {
+				p := wrapped.Contact
+				found = append(found, contactEntry{person: person{ID: p.Mid, Name: p.EffectiveDisplayName(), Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath), Friend: true}})
+			}
 		}
-		for _, wrapped := range found.Contacts {
-			p := wrapped.Contact
-			contacts = append(contacts, person{ID: p.Mid, Name: p.EffectiveDisplayName(), Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath), Friend: true})
+		for _, p := range found {
+			// The phone's friend list leaves out hidden (隱藏), blocked
+			// (封鎖) and deleted friends; getAllContactIds still returns them.
+			if p.ID == "" || blocked[p.ID] || p.hidden || p.blocked || p.deleted {
+				continue
+			}
+			contacts = append(contacts, p.person)
 		}
 	}
 	sort.Slice(contacts, func(i, j int) bool { return contacts[i].Name < contacts[j].Name })
@@ -208,9 +256,20 @@ func (b *backend) refreshSnapshot() error {
 	if err != nil {
 		return err
 	}
+	// Groups and rooms are listed only while the account is a member. Message
+	// boxes also return groups the user left (or was removed from); those have
+	// no name and used to show up as raw chat IDs, inflating the group count.
+	member := make(map[string]bool, len(groups.MemberChatMids))
+	for _, id := range groups.MemberChatMids {
+		member[id] = true
+	}
 	chats := map[string]chat{}
 	for _, old := range b.data.Chats {
-		chats[old.ID] = old
+		if old.Kind == "direct" || member[old.ID] {
+			// Listed again only if its message box is still active below.
+			old.HasMessages = false
+			chats[old.ID] = old
+		}
 	}
 	// Direct chats get the friend's current name and picture; a friend without
 	// any message box is not listed as a chat (LINE Desktop only lists talks).
@@ -235,7 +294,6 @@ func (b *backend) refreshSnapshot() error {
 			row.Muted = g.NotificationDisabled
 			favorite, _ := g.FavoriteTimestamp.Int64()
 			row.Favorite = favorite > 0
-			row.HasMessages = true
 			if g.Extra.GroupExtra != nil {
 				row.MemberCount = len(g.Extra.GroupExtra.MemberMids)
 				row.Members = groupMembers(g.Extra.GroupExtra.MemberMids)
@@ -246,11 +304,20 @@ func (b *backend) refreshSnapshot() error {
 	b.data.Contacts = contacts
 	minID := ""
 	for page := 0; page < 100; page++ {
-		boxes, err := c.GetMessageBoxes(line.MessageBoxesOptions{MinChatID: minID, MessageBoxCountLimit: 100, WithUnreadCount: true, LastMessagesPerMessageBoxCount: 1})
+		// ActiveOnly returns the talks LINE itself lists. Without it the
+		// server also returns every box ever opened (hundreds), most of them
+		// empty because their messages were deleted or have expired.
+		boxes, err := c.GetMessageBoxes(line.MessageBoxesOptions{MinChatID: minID, ActiveOnly: true, MessageBoxCountLimit: 100, WithUnreadCount: true, LastMessagesPerMessageBoxCount: 1})
 		if err != nil {
 			return err
 		}
 		for _, box := range boxes.MessageBoxes {
+			if chatKind(box.ID) != "direct" && !member[box.ID] {
+				continue
+			}
+			if !validMID(box.ID) {
+				continue
+			}
 			row := chats[box.ID]
 			row.ID = box.ID
 			row.Kind = chatKind(box.ID)

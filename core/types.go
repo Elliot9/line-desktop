@@ -37,6 +37,7 @@ type person struct {
 	// Friend is false for people known only from group membership or chats.
 	Friend   bool `json:"friend"`
 	Official bool `json:"official,omitempty"`
+	Favorite bool `json:"favorite,omitempty"`
 }
 type chat struct {
 	ID          string   `json:"id"`

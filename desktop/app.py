@@ -97,10 +97,11 @@ class Application(Gtk.Application):
         self.details_auto = True
         self.message_search = ""
         self.persistent = None
+        self.restoring = False
         self.modal = None
         self.modal_kind = ""
         self.popover_message = None
-        self.collapsed = set()
+        self.collapsed = {"official"}
         self.stick_bottom = True
         self.recent_stickers = [] if self.options.demo else list(self.prefs.settings["recent_stickers"])
         self.snap_pending = False
@@ -193,11 +194,13 @@ class Application(Gtk.Application):
         keys.connect("key-pressed", self.window_key)
         self.window.add_controller(keys)
         self.pages.set_visible_child_name("login")
+        self.show_restoring(not self.options.demo)
         self.window.present()
         try:
             self.core = Core(self.options.demo, self.dispatch, self.on_event)
             self.core.request("initialize", callback=self.initialized)
         except OSError:
+            self.show_restoring(False)
             self.toast("無法啟動 LINE 核心。請先建置程式，或確認 LINE_APP_CORE 指向可執行檔。", True)
             self.auth_status.set_text("核心尚未啟動。請關閉後重新開啟程式。")
         if self.options.smoke_test:
@@ -213,6 +216,7 @@ class Application(Gtk.Application):
 
     def initialized(self, response):
         if not response.get("ok"):
+            self.show_restoring(False)
             self.toast(self.error(response), True)
             return
         result = response.get("result", {})
@@ -232,7 +236,7 @@ class Application(Gtk.Application):
             pill.append(self.mode_label)
             header.pack_end(pill)
         else:
-            self.mode_label = label("桌面版體驗", "titlebar-end")
+            self.mode_label = label("", "titlebar-end")
             header.pack_end(self.mode_label)
         return header
 
@@ -271,6 +275,18 @@ class Application(Gtk.Application):
         switches.append(self.qr_tab)
         switches.append(self.email_tab)
         form.append(switches)
+        self.login_switches = switches
+        # Shown instead of the QR/email form while the core restores the
+        # session saved in the keyring, so a scan cannot replace it.
+        self.restore_box = box(V, 14, valign=CENTER)
+        self.restore_box.set_size_request(-1, 240)
+        self.restore_spinner = Gtk.Spinner()
+        self.restore_spinner.set_size_request(32, 32)
+        self.restore_spinner.set_halign(START)
+        self.restore_box.append(self.restore_spinner)
+        self.restore_box.append(label("正在恢復上次的登入…", "subtle", wrap=True))
+        self.restore_box.set_visible(False)
+        form.append(self.restore_box)
         self.auth_pages = Gtk.Stack()
         qr = box(V, 14)
         self.qr_frame = box(V, 0, "qr-box", halign=START)
@@ -321,6 +337,13 @@ class Application(Gtk.Application):
         page.append(card)
         self.pages.add_named(page, "login")
         self.login_view("qr")
+
+    def show_restoring(self, restoring):
+        self.restoring = restoring
+        self.restore_box.set_visible(restoring)
+        self.restore_spinner.set_spinning(restoring)
+        self.login_switches.set_visible(not restoring)
+        self.auth_pages.set_visible(not restoring)
 
     def logo(self):
         frame = box(V, 0, "line-logo", halign=START)
@@ -740,7 +763,7 @@ class Application(Gtk.Application):
         query = self.search.get_text().casefold().strip()
         rows = [c for c in self.state.contacts.values() if query in str(c.get("name", "")).casefold()]
         if self.filter == "favorite":
-            rows = [c for c in rows if self.prefs.has("favorites", c["id"])]
+            rows = [c for c in rows if c.get("favorite") or self.prefs.has("favorites", c["id"])]
         return rows
 
     def visible_chats(self):
@@ -780,13 +803,18 @@ class Application(Gtk.Application):
         own = self.state.profile
         if not query and own:
             self.chat_list.append(self.friend_row(own, profile=True))
-        friends = self.visible_friends()
-        favorites = [c for c in friends if self.prefs.has("favorites", c["id"])]
+        contacts = self.visible_friends()
+        # Like the phone app, official accounts get their own section and do
+        # not count as friends.
+        friends = [c for c in contacts if not c.get("official")]
+        official = [c for c in contacts if c.get("official")]
+        favorites = [c for c in contacts if c.get("favorite") or self.prefs.has("favorites", c["id"])]
         groups = [c for c in self.state.chats.values() if c.get("kind") in ("group", "room") and query in str(c.get("name", "")).casefold()]
         groups.sort(key=lambda c: str(c.get("name", "")))
         for key, title, rows, builder in (("favorites", "我的最愛", favorites, self.friend_row),
                                           ("groups", "群組", groups, self.group_row),
-                                          ("friends", "好友", friends, self.friend_row)):
+                                          ("friends", "好友", friends, self.friend_row),
+                                          ("official", "官方帳號", official, self.friend_row)):
             if not rows:
                 continue
             collapsed = key in self.collapsed and not query
@@ -794,7 +822,7 @@ class Application(Gtk.Application):
             if not collapsed:
                 for row in rows:
                     self.chat_list.append(builder(row))
-        if not friends and not groups:
+        if not contacts and not groups:
             self.chat_list.append(label("找不到符合的好友" if query else "還沒有好友", "empty", xalign=0.5))
 
     def section_header(self, key, title, count, collapsed):
@@ -2229,7 +2257,9 @@ class Application(Gtk.Application):
         own = self.state.profile.get("id", "")
         seen, targets = set(), []
         for chat in sorted(self.state.chats.values(), key=lambda item: -int(item.get("updated_at") or 0)):
-            if chat["id"] in seen or (chat["id"] != KEEP_ID and not chat.get("has_messages", True) and chat.get("kind") != "direct"):
+            # Groups are listed even without recent talk: they are all
+            # current memberships (the core drops groups the user left).
+            if chat["id"] in seen or (chat["id"] != KEEP_ID and not chat.get("has_messages", True) and chat.get("kind") == "direct"):
                 continue
             seen.add(chat["id"])
             targets.append({"id": chat["id"], "name": chat.get("name", "對話"), "chat": chat})
@@ -3044,6 +3074,8 @@ class Application(Gtk.Application):
     def on_event(self, event, data):
         if event == "session":
             state = data.get("state", "error")
+            if state != "connecting" and self.restoring:
+                self.show_restoring(False)
             if state == "logged_out":
                 self.clear_session()
                 self.auth_status.set_text(data.get("message") or "使用手機 LINE 掃描行動條碼，或以電子郵件登入。")
@@ -3064,7 +3096,7 @@ class Application(Gtk.Application):
                 else:
                     self.set_footer("")
             elif state == "connecting":
-                self.set_footer("正在重新連線…", "warning")
+                self.set_footer("正在恢復登入…" if self.restoring else "正在重新連線…", "warning")
             elif state == "error":
                 self.set_footer("連線已中斷", "error")
                 self.toast(data.get("message", "連線發生錯誤"), True)

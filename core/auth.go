@@ -58,7 +58,8 @@ func apiClient(ctx context.Context, token string) *line.Client {
 func (b *backend) api() *line.Client { return apiClient(b.ctx, b.session.AccessToken) }
 func (b *backend) beginRestore() {
 	b.stop()
-	b.sessionEvent("connecting", "正在讀取系統金鑰圈…")
+	b.restoring = true
+	b.sessionEvent("connecting", "正在恢復上次的登入…")
 	ctx, cancel := context.WithCancel(b.ctx)
 	b.loginCancel = cancel
 	generation := b.generation
@@ -360,6 +361,9 @@ func (b *backend) handleEvent(ev workerEvent) {
 	}
 	if ev.generation != b.generation {
 		return
+	}
+	if ev.kind == "restored" {
+		b.restoring = false
 	}
 	if ev.kind == "auth" {
 		b.emit("auth", ev.data)

@@ -58,6 +58,7 @@ type backend struct {
 	catalog           *attachments.Catalog
 	pendingReply      string
 	pushPreserved     bool
+	restoring         bool
 	imageCache        map[string][]byte
 	region            string
 	savedRevisionAt   time.Time
@@ -66,7 +67,15 @@ type backend struct {
 func main() {
 	demo := flag.Bool("demo", false, "Use deterministic offline demo data")
 	showVersion := flag.Bool("version", false, "Print version")
+	diag := flag.Bool("diagnose", false, "Print anonymised contact/chat field statistics for the saved login")
 	flag.Parse()
+	if *diag {
+		if err := diagnose(context.Background(), newKeyringStore()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *showVersion {
 		fmt.Println(version)
 		return
@@ -160,6 +169,7 @@ func (b *backend) stop() {
 		b.previousSession = b.session
 	}
 	b.generation++
+	b.restoring = false
 	if b.loginCancel != nil {
 		b.loginCancel()
 		b.loginCancel = nil
@@ -235,6 +245,14 @@ func (b *backend) handle(req request) (any, error, bool) {
 		}
 		if err != nil {
 			return nil, err, false
+		}
+		// A login would throw away the saved session that is being restored
+		// (or is already connected) and leave the app waiting for a scan.
+		if b.restoring {
+			return nil, fail("restoring", "正在恢復上次的登入，請稍候。"), false
+		}
+		if b.session != nil && b.state == "ready" {
+			return nil, fail("already_logged_in", "已經登入 LINE。"), false
 		}
 		b.beginLogin(req.Method, p.Email, p.Password)
 		return nil, nil, false
@@ -521,6 +539,11 @@ func (b *backend) acceptMessage(m message, notify bool) {
 			unread = 1
 		}
 		row := chat{ID: m.ChatID, Name: b.personName(m.ChatID), Kind: chatKind(m.ChatID), UpdatedAt: m.Time, Unread: unread, HasMessages: true}
+		if row.Kind != "direct" {
+			// A group joined since the last sync: look up its real name and
+			// members instead of showing the raw chat ID.
+			b.fillGroup(&row)
+		}
 		if p, ok := b.data.People[m.ChatID]; ok {
 			row.Avatar = p.Avatar
 		}
