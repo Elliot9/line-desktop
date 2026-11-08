@@ -57,6 +57,7 @@ type backend struct {
 	decryptedPayloads map[string][]byte
 	catalog           *attachments.Catalog
 	pendingReply      string
+	unsealedNoticed   map[string]bool
 	pushPreserved     bool
 	restoring         bool
 	// forget is set when the user unticked 自動登入: the session then lives

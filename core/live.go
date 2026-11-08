@@ -442,6 +442,9 @@ func (b *backend) convertMessage(raw *line.Message) message {
 		b.decryptedPayloads = map[string][]byte{}
 	}
 	b.rawMessages[raw.ID] = raw
+	if len(raw.Chunks) == 0 && raw.ContentType == 0 && raw.Text != "" {
+		m.Unencrypted = true
+	}
 	if len(raw.Chunks) > 0 {
 		payload, cached := b.decryptedPayloads[raw.ID]
 		var err error
@@ -659,7 +662,7 @@ func (b *backend) encryptPayload(chatID string, contentType int, payload []byte,
 			// negotiateE2EEPublicKey has no e2eeVersion field (it reports
 			// specVersion), so E2EEVersion is 0 for normal peers.
 			if err == nil && (peer <= 0 || key.PublicKey == "") {
-				err = errors.New("recipient Letter Sealing unavailable")
+				err = fmt.Errorf("recipient Letter Sealing unavailable: %w", line.ErrNoUsableE2EEPublicKey)
 			}
 			if err == nil {
 				myRaw, myRunner, keyErr := b.crypto.MyKeyIDs()
@@ -681,6 +684,14 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 	if err != nil {
 		if isAuthError(err) {
 			return nil, err
+		}
+		if noSealing(err) {
+			// Official accounts and very large groups have no Letter Sealing
+			// keys at all. Like upstream beeper/line, text goes out unencrypted.
+			if contentType == 0 {
+				return b.sendUnsealedText(chatID, metadata, payload)
+			}
+			return nil, fail("encryption_unavailable", "此聊天不支援 Letter Sealing（官方帳號或超大群組），目前只能傳送文字、貼圖與照片。")
 		}
 		return nil, fail("encryption_unavailable", "無法建立加密通道。請確認對方已啟用 Letter Sealing，然後重試。訊息未送出。")
 	}
@@ -716,6 +727,60 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 		b.decryptedPayloads = map[string][]byte{}
 	}
 	b.decryptedPayloads[raw.ID] = payload
+	return raw, nil
+}
+
+// noSealing reports whether LINE says the chat has no usable Letter Sealing
+// key (peer without keys, member with sealing off, group too large), as
+// opposed to a network or key-handling failure, which must not fall back.
+func noSealing(err error) bool {
+	return line.IsNoUsableE2EEPublicKey(err) || line.IsNoUsableE2EEGroupKey(err)
+}
+
+// sendUnsealedText sends a text payload ({"text", optional "REPLACE"}) as a
+// plain LINE message: body in Text, emoji ranges in ContentMetadata.
+func (b *backend) sendUnsealedText(chatID string, metadata map[string]string, payload []byte) (*line.Message, error) {
+	var body struct {
+		Text    string          `json:"text"`
+		Replace json.RawMessage `json:"REPLACE"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, err
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	if len(body.Replace) > 0 {
+		metadata["REPLACE"] = string(body.Replace)
+	}
+	raw := &line.Message{From: b.session.MID, To: chatID, ToType: toType(chatID), Text: body.Text, ContentMetadata: metadata, CreatedTime: json.Number(strconv.FormatInt(time.Now().UnixMilli(), 10))}
+	if b.pendingReply != "" {
+		raw.RelatedMessageID = b.pendingReply
+		raw.MessageRelationType = 3
+		raw.RelatedMessageServiceCode = 1
+	}
+	b.sequence++
+	sent, err := b.api().SendMessage(b.sequence, raw)
+	if err != nil {
+		if isAuthError(err) {
+			return nil, err
+		}
+		return nil, fail("send_uncertain", "無法確認訊息是否已送出。請先重新整理聊天記錄，再決定是否重送。")
+	}
+	if sent == nil || sent.ID == "" {
+		return nil, fail("send_uncertain", "LINE 未回傳訊息編號。請先重新整理聊天記錄，再決定是否重送。")
+	}
+	raw.ID = sent.ID
+	if sent.CreatedTime != "" {
+		raw.CreatedTime = sent.CreatedTime
+	}
+	if b.unsealedNoticed == nil {
+		b.unsealedNoticed = map[string]bool{}
+	}
+	if !b.unsealedNoticed[chatID] {
+		b.unsealedNoticed[chatID] = true
+		b.notice("此聊天不支援 Letter Sealing（官方帳號或超大群組），訊息以未加密方式傳送。")
+	}
 	return raw, nil
 }
 

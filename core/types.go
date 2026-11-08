@@ -80,6 +80,8 @@ type message struct {
 	Unsent  bool   `json:"unsent,omitempty"`
 	// Emoji lists LINE emoji (sticon) runs inside Text, by rune offset.
 	Emoji []emojiRun `json:"emoji,omitempty"`
+	// Unencrypted marks text sent or received without Letter Sealing.
+	Unencrypted bool `json:"unencrypted,omitempty"`
 }
 type emojiRun struct {
 	Start int    `json:"start"`

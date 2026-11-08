@@ -6,8 +6,11 @@ import (
  "io"
 	"os"
 	"errors"
+	"fmt"
  "testing"
  "time"
+
+	"github.com/beeper/line/pkg/line"
 )
 
 func TestSecretServiceRoundTrip(t *testing.T) {
@@ -124,5 +127,23 @@ func TestForgetSkipsKeyring(t *testing.T) {
 	b.saveSession()
 	if store.saved != 1 || !b.persistent {
 		t.Fatal("remembered session was not saved")
+	}
+}
+
+func TestNoSealingOnlyForMissingKeys(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"official account": {fmt.Errorf("recipient Letter Sealing unavailable: %w", line.ErrNoUsableE2EEPublicKey), true},
+		"large group":      {errors.New(`API error 400: {"code":10051,"message":"RESPONSE_ERROR","data":{"name":"TalkException","message":"TalkException","code":100,"reason":"exceed max member","parameterMap":{}}}`), true},
+		"network":          {errors.New("dial tcp: i/o timeout"), false},
+		"key not found":    {errors.New(`API error 400: {"code":10051,"message":"RESPONSE_ERROR","data":{"name":"TalkException","code":5,"reason":"not found"}}`), false},
+		"own key missing":  {errors.New("missing own private key"), false},
+	}
+	for name, c := range cases {
+		if got := noSealing(c.err); got != c.want {
+			t.Errorf("%s: noSealing=%v, want %v", name, got, c.want)
+		}
 	}
 }

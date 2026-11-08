@@ -141,7 +141,7 @@ cd line-desktop
 
 另外：
 
-- **Letter Sealing 必須開啟**（LINE 預設開啟）。為了安全，訊息不會改用未加密的方式傳送。
+- **官方帳號與超大群組沒有 Letter Sealing**：LINE 本身就不替它們加密，傳給它們的文字會以未加密方式送出，聊天頂端會顯示「🔓 此聊天未加密」；檔案則無法傳給這類聊天。一般好友與群組仍全程加密，加密失敗時不會改用明文。
 - **與 LINE Chrome 擴充功能共用登入名額**：登入這個程式可能讓 Chrome 擴充功能登出，反之亦然（[上游已知問題](https://github.com/beeper/line#known-issues)）。手機與官方 PC／Mac 版不受影響。
 
 各功能的詳細狀態見 [功能狀態](docs/STATUS.md)。

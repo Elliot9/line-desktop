@@ -1140,10 +1140,20 @@ class Application(Gtk.Application):
         if chat and chat.get("kind") in ("group", "room"):
             self.chat_title.set_text(f"{chat.get('name', '群組')} ({self.member_count(chat)})")
         self.muted_tag.set_visible(bool(chat and self.chat_muted(chat)))
-        self.chat_subtitle.set_text("")
-        self.subtitle_row.set_visible(False)
+        unsealed = bool(chat and self.chat_unencrypted(chat["id"]))
+        self.chat_subtitle.set_text("🔓 此聊天未加密" if unsealed else "")
+        self.chat_subtitle.set_tooltip_text("對方未啟用 Letter Sealing（官方帳號或超大群組），文字訊息以未加密方式傳送。" if unsealed else None)
+        self.subtitle_row.set_visible(unsealed)
         for widget in self.call_buttons:
             widget.set_visible(not chat or chat["id"] != KEEP_ID)
+
+    def chat_unencrypted(self, chat_id):
+        # The latest text message decides: LINE only sends text unsealed when
+        # the chat has no Letter Sealing keys.
+        for item in reversed(self.history_for(chat_id)):
+            if item.get("kind") == "text" and not str(item.get("id", "")).startswith("pending-"):
+                return bool(item.get("unencrypted"))
+        return False
 
     def history_for(self, chat_id):
         return self.state.messages.get(chat_id, [])
@@ -1770,6 +1780,7 @@ class Application(Gtk.Application):
 
     def after_message(self, chat_id):
         if self.state.selected == chat_id and self.main_stack.get_visible_child_name() == "chat":
+            self.render_header()
             self.render_messages()
             self.render_details()
         self.render_list()
@@ -3495,6 +3506,13 @@ class Application(Gtk.Application):
             self.check("no chat opens by itself at login", self.main_stack.get_visible_child_name() == "empty")
             self.select_chat("demo-weekend")
             self.check("reference chat opens on click", self.state.selected == "demo-weekend" and self.chat_title.get_text() == "週末散步計畫 (5)")
+            self.check("sealed chat has no unencrypted label", not self.subtitle_row.get_visible())
+            history = self.state.messages.setdefault("demo-weekend", [])
+            history.append({"id": "smoke-plain", "chat_id": "demo-weekend", "sender_id": "demo-hao", "sender_name": "林子豪", "text": "plain", "kind": "text", "time": 0, "status": "received", "unencrypted": True})
+            self.after_message("demo-weekend")
+            self.check("unencrypted chat is labelled in the header", self.subtitle_row.get_visible() and "未加密" in self.chat_subtitle.get_text())
+            self.state.messages["demo-weekend"] = [m for m in self.state.messages["demo-weekend"] if not m["id"].startswith("smoke-plain")]
+            self.after_message("demo-weekend")
             self.toggle_details()
             self.check("artwork renders through the SVG loader", art.texture("bear", 0, 120, 108, None).get_width() == 120)
             self.check("details panel shows tabs and members", {"資訊", "筆記本", "相簿", "檔案", "5 位成員"} <= set(self.labels_in(self.detail_contents)))

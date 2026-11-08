@@ -406,7 +406,12 @@ func diagnoseEncryption(ctx context.Context, saved *savedSession) {
 				}
 			}
 			_, self := keys[saved.MID]
-			reason = fmt.Sprintf("no group key yet; registration members=%d usable=%d includesMe=%v err=%v", len(keys), usable, self, midPattern.ReplaceAllString(fmt.Sprint(kerr), "<mid>"))
+			if noSealing(kerr) {
+				reason = "plain-text fallback: "
+			} else {
+				reason = ""
+			}
+			reason += fmt.Sprintf("no group key yet; registration members=%d usable=%d includesMe=%v err=%v", len(keys), usable, self, midPattern.ReplaceAllString(fmt.Sprint(kerr), "<mid>"))
 		}
 		if err != nil && kind == "u" {
 			official := "?"
@@ -425,6 +430,9 @@ func diagnoseEncryption(ctx context.Context, saved *savedSession) {
 			} else {
 				reason = "no key [official=" + official + "]"
 			}
+		}
+		if noSealing(err) {
+			reason = "plain-text fallback: " + reason
 		}
 		results[kind+" "+reason]++
 		if err == nil && kind == "u" {
