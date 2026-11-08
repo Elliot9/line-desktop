@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	gen "github.com/beeper/line/pkg"
+	"github.com/beeper/line/pkg/e2ee"
 	"github.com/beeper/line/pkg/line"
 	"matrix-line/core/internal/attachments"
 )
@@ -125,6 +127,7 @@ func diagnose(ctx context.Context, store sessionStore) error {
 		return fmt.Errorf("no saved login: %v", err)
 	}
 	token := saved.AccessToken
+	diagnoseEncryption(ctx, saved)
 	// Owned sticker and emoji packs, as the sticker panel loads them.
 	if client := apiClient(ctx, token); client != nil {
 		if profile, err := client.GetProfile(); err == nil {
@@ -361,4 +364,82 @@ func countPrefix(list []any, prefix string) int {
 		}
 	}
 	return n
+}
+
+var midPattern = regexp.MustCompile(`[ucr][0-9a-f]{32}`)
+
+// diagnoseEncryption seals a test payload for every active chat without
+// sending it or registering keys, and prints anonymised failure reasons.
+func diagnoseEncryption(ctx context.Context, saved *savedSession) {
+	crypto, err := e2ee.NewManager()
+	if err == nil {
+		err = crypto.LoadMyKeyFromExportedMap(saved.Keys)
+	}
+	if err != nil {
+		fmt.Printf("encryption: own keys unavailable: %v\n", err)
+		return
+	}
+	defer crypto.Close()
+	b := &backend{ctx: ctx, session: saved, crypto: crypto}
+	boxes, err := b.api().GetMessageBoxes(line.MessageBoxesOptions{ActiveOnly: true, MessageBoxCountLimit: 100})
+	if err != nil {
+		fmt.Printf("encryption: message boxes: %v\n", err)
+		return
+	}
+	results := map[string]int{}
+	for _, box := range boxes.MessageBoxes {
+		kind := string(midKind(box.ID))
+		_, _, err := b.encryptPayload(box.ID, 0, []byte(`{"text":"test"}`), false)
+		reason := "ok"
+		if err != nil {
+			reason = midPattern.ReplaceAllString(err.Error(), "<mid>")
+			if len(reason) > 160 {
+				reason = reason[:160] + "…"
+			}
+		}
+		if err != nil && kind != "u" && line.IsGroupKeyNotFound(err) {
+			keys, kerr := b.api().GetLastE2EEPublicKeys(box.ID)
+			usable := 0
+			for mid, key := range keys {
+				if validMID(mid) && midKind(mid) == 'u' && key.KeyID > 0 && key.KeyData != "" {
+					usable++
+				}
+			}
+			_, self := keys[saved.MID]
+			reason = fmt.Sprintf("no group key yet; registration members=%d usable=%d includesMe=%v err=%v", len(keys), usable, self, midPattern.ReplaceAllString(fmt.Sprint(kerr), "<mid>"))
+		}
+		if err != nil && kind == "u" {
+			official := "?"
+			if r, cerr := rawCall(ctx, saved.AccessToken, "getContactsV2", map[string]any{"targetUserMids": []string{box.ID}}); cerr == nil {
+				data, _ := r["data"].(map[string]any)
+				found, _ := data["contacts"].(map[string]any)
+				for _, w := range found {
+					wrapper, _ := w.(map[string]any)
+					if c, ok := wrapper["contact"].(map[string]any); ok {
+						official = fmt.Sprint(parseContact(c).Official)
+					}
+				}
+			}
+			if key, kerr := b.api().NegotiateE2EEPublicKey(box.ID); kerr == nil {
+				reason += fmt.Sprintf(" [official=%s e2eeVersion=%d]", official, key.E2EEVersion)
+			} else {
+				reason = "no key [official=" + official + "]"
+			}
+		}
+		results[kind+" "+reason]++
+		if err == nil && kind == "u" {
+			if key, kerr := b.api().NegotiateE2EEPublicKey(box.ID); kerr == nil {
+				results[fmt.Sprintf("u e2eeVersion=%d", key.E2EEVersion)]++
+			}
+		}
+	}
+	keys := make([]string, 0, len(results))
+	for k := range results {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Println("== encryption dry run (nothing sent)")
+	for _, k := range keys {
+		fmt.Printf("  %3d  %s\n", results[k], k)
+	}
 }

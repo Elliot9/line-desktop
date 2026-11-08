@@ -638,19 +638,16 @@ func (b *backend) registerGroupKey(chatID string) error {
 	}
 	return errors.New("group members changed during registration")
 }
-func (b *backend) sendPayload(chatID string, contentType int, metadata map[string]string, payload []byte) (*line.Message, error) {
-	if b.crypto == nil {
-		return nil, fail("encryption_keys", "加密金鑰尚未就緒，請重新登入。")
-	}
-	var chunks []string
-	var err error
-	toType := 0
+
+// encryptPayload seals payload for chatID; register allows creating a group
+// key when the group has none (false only for read-only diagnostics).
+func (b *backend) encryptPayload(chatID string, contentType int, payload []byte, register bool) (chunks []string, toType int, err error) {
 	if kind := midKind(chatID); kind == 'c' || kind == 'r' {
 		toType = 2
 		if kind == 'r' {
 			toType = 1
 		}
-		if err = b.ensureGroupKey(chatID, 0, true); err == nil {
+		if err = b.ensureGroupKey(chatID, 0, register); err == nil {
 			chunks, err = b.crypto.EncryptGroupMessageRaw(chatID, b.session.MID, contentType, payload)
 		}
 	} else {
@@ -659,7 +656,9 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 		if err == nil {
 			var peer int64
 			peer, err = key.KeyID.Int64()
-			if err == nil && (peer <= 0 || key.PublicKey == "" || key.E2EEVersion < 1) {
+			// negotiateE2EEPublicKey has no e2eeVersion field (it reports
+			// specVersion), so E2EEVersion is 0 for normal peers.
+			if err == nil && (peer <= 0 || key.PublicKey == "") {
 				err = errors.New("recipient Letter Sealing unavailable")
 			}
 			if err == nil {
@@ -671,6 +670,14 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 			}
 		}
 	}
+	return chunks, toType, err
+}
+
+func (b *backend) sendPayload(chatID string, contentType int, metadata map[string]string, payload []byte) (*line.Message, error) {
+	if b.crypto == nil {
+		return nil, fail("encryption_keys", "加密金鑰尚未就緒，請重新登入。")
+	}
+	chunks, toType, err := b.encryptPayload(chatID, contentType, payload, true)
 	if err != nil {
 		if isAuthError(err) {
 			return nil, err
