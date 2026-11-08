@@ -11,15 +11,15 @@ cache_base=${XDG_CACHE_HOME:-$HOME/.cache}
 go_command=$cache_base/matrix-line/toolchains/go1.26.10-linux-$host_arch/bin/go
 staging=$(mktemp -d "$project_dir/.build/package.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-mkdir -p "$staging/matrix-line/bin" dist
-tar --exclude='__pycache__' --exclude='*.pyc' -cf - \
-    line-app README.md THIRD_PARTY.md index.html core desktop docs scripts |
-    tar -xf - -C "$staging/matrix-line"
+mkdir -p "$staging/line-desktop/bin" dist
+tar --exclude='__pycache__' --exclude='*.pyc' --exclude='docs/images' -cf - \
+    line-app VERSION README.md THIRD_PARTY.md index.html core desktop docs scripts |
+    tar -xf - -C "$staging/line-desktop"
 echo "建置 Linux $target_arch 可攜套件…" >&2
 (cd core && CGO_ENABLED=0 GOOS=linux GOARCH="$target_arch" GOTOOLCHAIN=local \
     "$go_command" build -mod=readonly -trimpath -ldflags='-s -w' \
-    -o "$staging/matrix-line/bin/line-core-linux-$target_arch" .)
-archive=matrix-line-preview-linux-$target_arch.tar.gz
-tar -czf "dist/$archive" -C "$staging" matrix-line
+    -o "$staging/line-desktop/bin/line-core-linux-$target_arch" .)
+archive=line-desktop-linux-$target_arch.tar.gz
+tar -czf "dist/$archive" -C "$staging" line-desktop
 (cd dist && sha256sum "$archive" >"$archive.sha256")
 printf '%s\n' "$project_dir/dist/$archive"

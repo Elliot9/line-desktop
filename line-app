@@ -3,6 +3,9 @@ set -euo pipefail
 
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 case ${1:-} in
+    --version|-V)
+        cat "$project_dir/VERSION"
+        exit 0 ;;
     --help|-h)
         cat <<'HELP'
 LINE for Linux（非官方 GTK 4 用戶端）
@@ -11,6 +14,7 @@ LINE for Linux（非官方 GTK 4 用戶端）
   ./line-app --demo          開啟離線展示，不連線至 LINE
   ./line-app --setup         只安裝相依套件與建置
   ./line-app --install-menu  加入目前使用者的應用程式選單
+  ./line-app --version       顯示版本
   ./line-app --smoke-test DIR 在 Linux 顯示工作階段執行 GUI 自動檢查
 
 支援 Ubuntu 24.04+／Debian 12+，x86_64 與 ARM64。
