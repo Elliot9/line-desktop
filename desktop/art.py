@@ -30,6 +30,7 @@ ICON_PATHS = {
     "settings": '<path d="m9.7 3-.7 2.2-2.2 1-2.3-.4L2.9 8.6l1.5 1.8v2.5L3 14.7l1.7 2.8 2.2-.4 2.2 1 .7 2.2h3.3l.7-2.2 2.2-1 2.3.4 1.7-2.8-1.5-1.8v-2.5l1.5-1.8-1.7-2.8-2.3.4-2.2-1-.7-2.2H9.7Z"/><circle cx="11.4" cy="11.7" r="3.1"/>',
     "search": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
     "plus": '<path d="M12 4v16M4 12h16"/>',
+    "menu": '<path d="M4 6.5h16M4 12h16M4 17.5h16"/>',
     "edit": '<path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14v6Z"/>',
     "chevron": '<path d="m9 5 7 7-7 7"/>',
     "back": '<path d="m15 5-7 7 7 7"/>',
@@ -71,7 +72,14 @@ PORTRAIT_COLORS = [
     ("#dce7ec", "#454b54", "#83a6ba"),
 ]
 MOODS = ["出發！", "收到 ♡", "好期待", "謝謝你", "早安", "一起加油", "哈哈哈", "晚安"]
-EMOJI = ["😊", "🥰", "😂", "😍", "🥺", "😎", "😴", "🙌", "👍", "👏", "💚", "✨", "🌿", "☀️", "☕", "🎉", "🐻", "🌸", "🍰", "🎧", "🚶"]
+# The basic emoji set in the 表情貼 tab, before any owned LINE emoji packs.
+BASIC_EMOJI = (
+    "😀😃😄😁😆😅😂🤣🥲😊😇🙂🙃😉😌😍🥰😘😗😙😚😋😛😝😜🤪🤨🧐🤓😎🥸🤩🥳😏😒😞😔😟😕🙁😣😖😫😩🥺😢😭"
+    "😤😠😡🤯😳🥵🥶😱😨😰😥😓🤗🤔🫣🤭🤫🤥😶😐😑😬🙄😯😦😧😮😲🥱😴🤤😪😵🤐🥴🤢🤮🤧😷🤒🤕"
+    "👍👎👌✌🤞🤟🤘👋🙌👏🙏💪🫶❤🧡💛💚💙💜🖤🤍💔💕💖✨⭐🔥🎉🎂🎁🌸🌿☀☕🍰🍺🐻🐱🐶🎧🚶"
+)
+# Text-default symbols need VS16 to draw as emoji.
+BASIC_EMOJI = [glyph + ("\ufe0f" if glyph in "✌❤☀" else "") for glyph in BASIC_EMOJI]
 
 
 def icon(name):

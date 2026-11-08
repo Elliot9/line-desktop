@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -18,6 +21,53 @@ import (
 
 	"matrix-line/core/internal/attachments"
 )
+
+// fetchSticonMeta downloads an emoji pack's public meta.json (order and alt
+// text) from LINE's sticker CDN; productID is validated by the catalog.
+func fetchSticonMeta(ctx context.Context, productID string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://stickershop.line-scdn.net/sticonshop/v1/product/"+productID+"/android/meta.json", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("emoji meta: HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// sendEmojiText sends text whose U+FFFC placeholders stand for owned LINE
+// emoji, the way the official clients do: alt text in the body plus
+// REPLACE.sticon ranges and STICON_OWNERSHIP.
+func (b *backend) sendEmojiText(chatID, text, replyTo string, refs []attachments.EmojiRef) (message, error) {
+	if b.catalog == nil {
+		return message{}, fail("invalid_params", "表情貼清單尚未載入，請重新開啟表情貼面板。")
+	}
+	body, resources, products, err := b.catalog.EmojiText(text, refs, time.Now())
+	if err != nil {
+		return message{}, fail("invalid_params", "無法使用這個表情貼，請重新開啟表情貼面板後再試。")
+	}
+	payload, _ := json.Marshal(map[string]any{"text": body, "REPLACE": map[string]any{"sticon": map[string]any{"resources": resources}}})
+	ownership, _ := json.Marshal(products)
+	b.pendingReply = replyTo
+	raw, err := b.sendPayload(chatID, 0, map[string]string{"STICON_OWNERSHIP": string(ownership)}, payload)
+	b.pendingReply = ""
+	if err != nil {
+		return message{}, err
+	}
+	msg := b.convertMessage(raw)
+	explicit := make([]sticonResource, len(resources))
+	for i, r := range resources {
+		explicit[i] = sticonResource{Start: r.Start, End: r.End, ProductID: r.ProductID, SticonID: r.SticonID, ResourceType: r.ResourceType}
+	}
+	msg.Text, msg.Emoji = inlineEmoji(body, explicit)
+	msg.Kind = "text"
+	return msg, nil
+}
 
 func (b *backend) handleAttachment(req request) (any, error) {
 	switch req.Method {
@@ -39,7 +89,7 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		if b.catalog != nil && !reload.Reload {
 			return map[string]any{"packs": b.catalog.Packs()}, nil
 		}
-		catalog, err := attachments.LoadCatalog(b.ctx, b.api(), b.region, time.Now())
+		catalog, err := attachments.LoadCatalog(b.ctx, b.api(), b.region, time.Now(), fetchSticonMeta)
 		if err != nil {
 			return nil, err
 		}

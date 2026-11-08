@@ -17,6 +17,7 @@ import (
 
 	gen "github.com/beeper/line/pkg"
 	"github.com/beeper/line/pkg/line"
+	"matrix-line/core/internal/attachments"
 )
 
 func rawCall(ctx context.Context, token, method string, args ...any) (map[string]any, error) {
@@ -124,6 +125,20 @@ func diagnose(ctx context.Context, store sessionStore) error {
 		return fmt.Errorf("no saved login: %v", err)
 	}
 	token := saved.AccessToken
+	// Owned sticker and emoji packs, as the sticker panel loads them.
+	if client := apiClient(ctx, token); client != nil {
+		if profile, err := client.GetProfile(); err == nil {
+			catalog, err := attachments.LoadCatalog(ctx, client, profile.RegionCode, time.Now(), fetchSticonMeta)
+			kinds := map[string]int{}
+			if err == nil {
+				for _, pack := range catalog.Packs() {
+					kinds["packs:"+pack.Kind] += 1
+					kinds["items:"+pack.Kind] += len(pack.Stickers)
+				}
+			}
+			fmt.Printf("sticker catalog: %v err=%v\n", kinds, err)
+		}
+	}
 	ids, err := rawCall(ctx, token, "getAllContactIds")
 	if err != nil {
 		return fmt.Errorf("getAllContactIds: %w", err)

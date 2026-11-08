@@ -104,3 +104,25 @@ func TestLoginRejectedWhileRestoring(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type recordingStore struct{ saved, cleared int }
+
+func (s *recordingStore) Load(context.Context) (*savedSession, error) { return nil, errNoSession }
+func (s *recordingStore) Save(context.Context, *savedSession) error   { s.saved++; return nil }
+func (s *recordingStore) Clear(context.Context) error                 { s.cleared++; return nil }
+
+// Unticking 自動登入 keeps the session in memory only and removes an older
+// keyring copy, so the next start shows the login page.
+func TestForgetSkipsKeyring(t *testing.T) {
+	store := &recordingStore{}
+	b := &backend{ctx: context.Background(), store: store, session: &savedSession{AccessToken: "x"}, stored: true, forget: true}
+	b.saveSession()
+	if store.saved != 0 || store.cleared != 1 || b.persistent || b.stored {
+		t.Fatalf("forget: saved=%d cleared=%d persistent=%v stored=%v", store.saved, store.cleared, b.persistent, b.stored)
+	}
+	b.forget = false
+	b.saveSession()
+	if store.saved != 1 || !b.persistent {
+		t.Fatal("remembered session was not saved")
+	}
+}

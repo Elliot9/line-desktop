@@ -59,9 +59,12 @@ type backend struct {
 	pendingReply      string
 	pushPreserved     bool
 	restoring         bool
-	imageCache        map[string][]byte
-	region            string
-	savedRevisionAt   time.Time
+	// forget is set when the user unticked 自動登入: the session then lives
+	// only in memory and any earlier keyring copy is removed.
+	forget          bool
+	imageCache      map[string][]byte
+	region          string
+	savedRevisionAt time.Time
 }
 
 func main() {
@@ -233,10 +236,15 @@ func (b *backend) handle(req request) (any, error, bool) {
 		var p struct {
 			Email    string `json:"email"`
 			Password string `json:"password"`
+			Remember *bool  `json:"remember"`
 		}
 		var err error
 		if req.Method == "login.qr" {
-			err = params(req.Params, &struct{}{})
+			var q struct {
+				Remember *bool `json:"remember"`
+			}
+			err = params(req.Params, &q)
+			p.Remember = q.Remember
 		} else {
 			err = params(req.Params, &p)
 			if err == nil && (len(p.Email) > 320 || !strings.Contains(p.Email, "@") || p.Password == "" || len(p.Password) > 1024) {
@@ -255,6 +263,7 @@ func (b *backend) handle(req request) (any, error, bool) {
 			return nil, fail("already_logged_in", "已經登入 LINE。"), false
 		}
 		b.beginLogin(req.Method, p.Email, p.Password)
+		b.forget = p.Remember != nil && !*p.Remember
 		return nil, nil, false
 	case "login.cancel":
 		if err := params(req.Params, &struct{}{}); err != nil {
@@ -327,9 +336,10 @@ func (b *backend) handle(req request) (any, error, bool) {
 		return map[string]any{"messages": list}, err, false
 	case "messages.send":
 		var p struct {
-			ChatID  string `json:"chat_id"`
-			Text    string `json:"text"`
-			ReplyTo string `json:"reply_to"`
+			ChatID  string                 `json:"chat_id"`
+			Text    string                 `json:"text"`
+			ReplyTo string                 `json:"reply_to"`
+			Emoji   []attachments.EmojiRef `json:"emoji"`
 		}
 		if err := params(req.Params, &p); err != nil {
 			return nil, err, false
@@ -343,8 +353,13 @@ func (b *backend) handle(req request) (any, error, bool) {
 		var msg message
 		var err error
 		if b.demo {
+			if len(p.Emoji) > 0 {
+				return nil, fail("invalid_params", "展示模式沒有 LINE 表情貼。"), false
+			}
 			msg = b.demoSend(p.ChatID, p.Text)
 			msg.ReplyTo = p.ReplyTo
+		} else if len(p.Emoji) > 0 {
+			msg, err = b.sendEmojiText(p.ChatID, p.Text, p.ReplyTo, p.Emoji)
 		} else {
 			msg, err = b.sendReply(p.ChatID, p.Text, p.ReplyTo)
 		}

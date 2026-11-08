@@ -9,12 +9,12 @@ import uuid
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk
 
 from . import art
 from . import avatar as avatar_module
 from . import ui as ui_module
-from .art import Art, EMOJI, MOODS
+from .art import Art, BASIC_EMOJI, MOODS
 from .ipc import Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
 from .pictures import Pictures
@@ -22,6 +22,8 @@ from .ui import (H, V, Responsive, box, button, chat_avatar, clear, dot, file_ba
                  icon, icon_button, icon_text, label, person_avatar, scroller, set_accessible_label)
 
 ASSETS = Path(__file__).with_name("assets")
+# Core messages that only mean "you are on the login page"; not shown as errors.
+LOGIN_ROUTINE = {"請使用手機 LINE 掃描 QR code 登入。", "已取消登入。", "已登出。"}
 WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 MAX_FILE = 25 * 1024 * 1024
 MAX_QUEUE = 20
@@ -72,6 +74,27 @@ def day_label(milliseconds):
     if days == 1:
         return "昨天 · " + text
     return text if stamp.year == datetime.date.today().year else f"{stamp.year} 年 " + text
+
+
+class InlineEmoji(GObject.Object, Gdk.Paintable):
+    """A LINE emoji (sticon) placed in the composer: drawn at text size and
+    carrying the reference the core needs to send it."""
+
+    def __init__(self, texture, size, ref):
+        super().__init__()
+        self.texture, self.size, self.ref = texture, size, ref
+
+    def do_snapshot(self, snapshot, width, height):
+        self.texture.snapshot(snapshot, width, height)
+
+    def do_get_intrinsic_width(self):
+        return self.size
+
+    def do_get_intrinsic_height(self):
+        return self.size
+
+    def do_get_flags(self):
+        return Gdk.PaintableFlags.SIZE | Gdk.PaintableFlags.CONTENTS
 
 
 class Application(Gtk.Application):
@@ -202,7 +225,7 @@ class Application(Gtk.Application):
         except OSError:
             self.show_restoring(False)
             self.toast("無法啟動 LINE 核心。請先建置程式，或確認 LINE_APP_CORE 指向可執行檔。", True)
-            self.auth_status.set_text("核心尚未啟動。請關閉後重新開啟程式。")
+            self.login_message("核心尚未啟動。請關閉後重新開啟程式。")
         if self.options.smoke_test:
             GLib.timeout_add(250, self.smoke_tick)
 
@@ -241,119 +264,117 @@ class Application(Gtk.Application):
         return header
 
     # ------------------------------------------------------------------ login
+    # Mirrors the official LINE desktop login window: e-mail form on the left,
+    # a QR code that is generated automatically on the right.
     def build_login(self):
-        page = box(V, 0, "login")
-        top = box(H, 16, "presentation")
-        mark = box(H, 0, valign=CENTER)
-        mark.append(label("LINE Desktop", "wordmark"))
-        mark.append(label(".", "wordmark-dot"))
-        top.append(mark)
-        page.append(top)
-        card = box(H, 0, "login-card", halign=CENTER, valign=CENTER, vexpand=True)
-        card.set_margin_bottom(60)
-        hero = box(V, 0, "login-art")
-        hero.set_size_request(400, -1)
-        hero.append(self.logo())
-        hero.append(label("把日常，\n聊成喜歡的樣子。", "login-hero", wrap=True))
-        hero.get_last_child().set_margin_top(26)
-        lead = label("每一句問候，都是靠近彼此的一小步。", "login-lead", wrap=True)
-        lead.set_margin_top(12)
-        hero.append(lead)
-        picture = Art("scene", "mountain", 324, 200, "r16")
-        picture.set_margin_top(28)
-        picture.set_margin_bottom(22)
-        hero.append(picture)
-        hero.append(label("保留一點時間，給在乎的人。", "login-lead"))
-        card.append(hero)
-        form = box(V, 14, "login-form")
-        form.set_size_request(430, -1)
-        form.append(label("歡迎回來", "side-title"))
-        form.append(label("登入 LINE，繼續你的對話。", "subtle"))
-        switches = box(H, 7)
-        self.qr_tab = button(None, lambda: self.login_view("qr"), "filter", text="行動條碼登入")
-        self.email_tab = button(None, lambda: self.login_view("email"), "filter", text="電子郵件登入")
-        switches.append(self.qr_tab)
-        switches.append(self.email_tab)
-        form.append(switches)
-        self.login_switches = switches
-        # Shown instead of the QR/email form while the core restores the
-        # session saved in the keyring, so a scan cannot replace it.
-        self.restore_box = box(V, 14, valign=CENTER)
-        self.restore_box.set_size_request(-1, 240)
-        self.restore_spinner = Gtk.Spinner()
-        self.restore_spinner.set_size_request(32, 32)
-        self.restore_spinner.set_halign(START)
-        self.restore_box.append(self.restore_spinner)
-        self.restore_box.append(label("正在恢復上次的登入…", "subtle", wrap=True))
-        self.restore_box.set_visible(False)
-        form.append(self.restore_box)
-        self.auth_pages = Gtk.Stack()
-        qr = box(V, 14)
-        self.qr_frame = box(V, 0, "qr-box", halign=START)
-        self.qr_frame.set_size_request(240, 240)
-        self.qr_picture = Gtk.Picture()
-        self.qr_picture.set_size_request(198, 198)
-        self.qr_picture.set_visible(False)
-        self.qr_frame.append(self.qr_picture)
-        self.qr_placeholder = box(V, 12, valign=CENTER, vexpand=True)
-        placeholder_icon = icon("image", 64)
-        placeholder_icon.set_halign(CENTER)
-        self.qr_placeholder.append(placeholder_icon)
-        self.qr_placeholder.append(label("使用手機 LINE 掃描", "subtle", xalign=0.5))
-        self.qr_frame.append(self.qr_placeholder)
-        qr.append(self.qr_frame)
-        self.qr_button = button(None, self.start_qr, "primary", text="產生登入行動條碼")
-        self.qr_button.set_halign(START)
-        qr.append(self.qr_button)
-        qr.append(label("開啟手機 LINE › 設定 › 行動條碼登入", "subtle", wrap=True))
-        self.auth_pages.add_named(qr, "qr")
-        email = box(V, 0)
-        self.email_entry = Gtk.Entry(placeholder_text="name@example.com")
+        page = box(H, 0, "login")
+        left = box(V, 0, "login-main", hexpand=True)
+        self.login_left = Gtk.Stack(vexpand=True)
+        left.append(self.login_left)
+
+        form = box(V, 0, halign=CENTER, valign=CENTER)
+        form.set_size_request(300, -1)
+        form.append(label("LINE", "login-logo", xalign=0.5))
+        fields = box(V, 0, "login-fields")
+        self.email_entry = Gtk.Entry(placeholder_text="電子郵件帳號")
         self.email_entry.set_input_purpose(Gtk.InputPurpose.EMAIL)
-        email.append(self.field("電子郵件", self.email_entry))
+        self.email_entry.connect("activate", lambda *_: self.password_entry.grab_focus())
+        self.email_entry.connect("changed", lambda *_: self.update_login_button())
+        fields.append(self.email_entry)
+        fields.append(Gtk.Separator())
         self.password_entry = Gtk.PasswordEntry(show_peek_icon=True)
-        self.password_entry.set_property("placeholder-text", "LINE 帳號密碼")
+        self.password_entry.set_property("placeholder-text", "密碼")
         self.password_entry.connect("activate", lambda *_: self.start_email())
-        email.append(self.field("密碼", self.password_entry))
-        self.email_button = button(None, self.start_email, "primary", text="登入")
-        self.email_button.set_halign(START)
-        email.append(self.email_button)
-        hint = label("請先在手機 LINE 設定電子郵件與密碼。", "subtle", wrap=True)
-        hint.set_margin_top(12)
-        email.append(hint)
-        self.auth_pages.add_named(email, "email")
-        form.append(self.auth_pages)
-        self.pin_label = label("", "pin")
-        self.pin_label.set_visible(False)
-        form.append(self.pin_label)
-        self.auth_status = label("帳號憑證由系統鑰匙圈保管。", "subtle", wrap=True)
+        self.password_entry.connect("changed", lambda *_: self.update_login_button())
+        fields.append(self.password_entry)
+        form.append(fields)
+        self.email_button = button(None, self.start_email, "login-submit", text="登入")
+        form.append(self.email_button)
+        options = box(H, 0, "login-options")
+        self.auto_login = Gtk.CheckButton(label="自動登入", active=self.prefs.settings["auto_login"])
+        self.auto_login.add_css_class("login-check")
+        self.auto_login.set_hexpand(True)
+        self.auto_login.connect("toggled", lambda check: self.prefs.save_settings(auto_login=check.get_active()))
+        options.append(self.auto_login)
+        options.append(button(None, self.reset_password, "login-link", text="重設密碼"))
+        form.append(options)
+        self.auth_status = label("", "login-status", wrap=True, xalign=0.5)
+        self.auth_status.set_visible(False)
         form.append(self.auth_status)
-        self.cancel_login = button(None, self.cancel_auth, "secondary", text="取消登入")
-        self.cancel_login.set_halign(START)
-        self.cancel_login.set_visible(False)
-        form.append(self.cancel_login)
-        form.append(label("非官方 Linux 用戶端 · 僅顯示實際可用功能", "fine-print", wrap=True))
-        card.append(form)
-        page.append(card)
+        self.login_left.add_named(form, "form")
+
+        pin = box(V, 0, "login-pin-page", halign=CENTER, valign=CENTER)
+        pin.set_size_request(300, -1)
+        pin.append(label("LINE", "login-logo", xalign=0.5))
+        pin.append(label("請在手機上輸入驗證碼", "login-qr-title", xalign=0.5))
+        self.pin_label = label("", "pin", xalign=0.5)
+        pin.append(self.pin_label)
+        self.pin_hint = label("請在 3 分鐘內於手機 LINE 輸入上方驗證碼。", "login-qr-text", wrap=True, xalign=0.5)
+        pin.append(self.pin_hint)
+        self.cancel_login = button(None, self.cancel_auth, "login-cancel", text="取消")
+        self.cancel_login.set_halign(CENTER)
+        pin.append(self.cancel_login)
+        self.login_left.add_named(pin, "pin")
+
+        busy = box(V, 16, halign=CENTER, valign=CENTER)
+        busy.append(label("LINE", "login-logo", xalign=0.5))
+        self.restore_spinner = Gtk.Spinner()
+        self.restore_spinner.set_size_request(28, 28)
+        busy.append(self.restore_spinner)
+        self.busy_label = label("", "login-qr-text", xalign=0.5)
+        busy.append(self.busy_label)
+        self.login_left.add_named(busy, "busy")
+        page.append(left)
+
+        side = box(V, 0, "login-side")
+        side.set_size_request(280, -1)
+        side.set_hexpand(False)
+        tools = box(H, 4, "login-tools", halign=END)
+        tools.append(icon_button("help", self.open_help, "使用說明", 22, "login-tool"))
+        menu_button = Gtk.MenuButton()
+        menu_button.add_css_class("login-tool")
+        menu_button.set_child(icon("menu", 22))
+        menu_button.set_tooltip_text("選單")
+        menu = Gtk.Popover(has_arrow=False)
+        menu.add_css_class("line-popover")
+        items = box(V, 0)
+        for title, callback in (("使用說明", self.open_help), ("結束 LINE", self.quit)):
+            items.append(button(label(title), lambda action=callback: (menu.popdown(), action()), None))
+        menu.set_child(items)
+        menu_button.set_popover(menu)
+        tools.append(menu_button)
+        side.append(tools)
+        qr = box(V, 0, halign=CENTER, valign=CENTER, vexpand=True)
+        qr.set_size_request(220, -1)
+        self.qr_frame = Gtk.Overlay(halign=CENTER)
+        self.qr_frame.add_css_class("login-qr")
+        # Gtk.Image scales the paintable to pixel_size; Gtk.Picture would
+        # grow to the PNG's own size.
+        self.qr_picture = Gtk.Image(pixel_size=150)
+        self.qr_picture.set_size_request(150, 150)
+        self.qr_frame.set_child(self.qr_picture)
+        self.qr_placeholder = Gtk.Spinner(halign=CENTER, valign=CENTER)
+        self.qr_placeholder.set_size_request(28, 28)
+        self.qr_frame.add_overlay(self.qr_placeholder)
+        self.qr_button = button(None, self.start_qr, "login-qr-retry", text="重新產生")
+        self.qr_button.set_halign(CENTER)
+        self.qr_button.set_valign(CENTER)
+        self.qr_button.set_visible(False)
+        self.qr_frame.add_overlay(self.qr_button)
+        qr.append(self.qr_frame)
+        qr.append(label("使用行動條碼登入", "login-qr-title", xalign=0.5))
+        hint = label("請在手機上開啟LINE應用程式，點選搜尋欄位旁的掃描圖示，再掃描此行動條碼。", "login-qr-text", wrap=True, xalign=0.5)
+        hint.set_justify(Gtk.Justification.CENTER)
+        hint.set_max_width_chars(16)
+        hint.set_width_chars(16)
+        qr.append(hint)
+        side.append(qr)
+        page.append(side)
         self.pages.add_named(page, "login")
-        self.login_view("qr")
-
-    def show_restoring(self, restoring):
-        self.restoring = restoring
-        self.restore_box.set_visible(restoring)
-        self.restore_spinner.set_spinning(restoring)
-        self.login_switches.set_visible(not restoring)
-        self.auth_pages.set_visible(not restoring)
-
-    def logo(self):
-        frame = box(V, 0, "line-logo", halign=START)
-        frame.set_size_request(40, 40)
-        text = label("LINE", xalign=0.5, )
-        text.set_halign(CENTER)
-        text.set_valign(CENTER)
-        text.set_vexpand(True)
-        frame.append(text)
-        return frame
+        self.auth_method = None
+        self.qr_failed = False
+        self.reset_qr()
+        self.update_login_button()
 
     def field(self, title, widget, css=""):
         wrapper = box(V, 0, "field " + css)
@@ -361,51 +382,94 @@ class Application(Gtk.Application):
         wrapper.append(widget)
         return wrapper
 
-    def login_view(self, name):
-        self.auth_pages.set_visible_child_name(name)
-        for widget, selected in ((self.qr_tab, name == "qr"), (self.email_tab, name == "email")):
-            widget.add_css_class("active") if selected else widget.remove_css_class("active")
+    def show_restoring(self, restoring):
+        self.restoring = restoring
+        self.show_login_busy("正在恢復上次的登入…" if restoring else None)
+
+    def show_login_busy(self, text):
+        """Left pane: a spinner with text, or back to the form when None."""
+        busy = text is not None
+        if busy:
+            self.busy_label.set_text(text)
+        self.restore_spinner.set_spinning(busy)
+        self.login_left.set_visible_child_name("busy" if busy else "form")
+
+    def login_message(self, text, error=True):
+        self.auth_status.set_text(text or "")
+        self.auth_status.set_visible(bool(text))
+        if error:
+            self.auth_status.add_css_class("error")
+        else:
+            self.auth_status.remove_css_class("error")
+
+    def update_login_button(self):
+        ready = bool(self.email_entry.get_text().strip() and self.password_entry.get_text())
+        self.email_button.set_sensitive(ready)
+
+    def reset_qr(self):
+        """QR area: a spinner while a code is on its way, or 重新產生 after a failure."""
+        self.qr_picture.clear()
+        self.qr_placeholder.set_visible(not self.qr_failed)
+        self.qr_placeholder.set_spinning(not self.qr_failed)
+        self.qr_button.set_visible(self.qr_failed)
 
     def start_qr(self):
-        if self.core:
-            self.auth_busy(True)
-            self.qr_picture.set_visible(False)
-            self.qr_placeholder.set_visible(True)
-            self.auth_status.set_text("正在取得行動條碼…")
-            self.core.request("login.qr", callback=self.auth_reply)
+        if not self.core or self.restoring:
+            return
+        self.auth_method = "qr"
+        self.qr_failed = False
+        self.reset_qr()
+        self.core.request("login.qr", {"remember": self.auto_login.get_active()}, self.auth_reply)
 
     def start_email(self):
         email = self.email_entry.get_text().strip()
         password = self.password_entry.get_text()
         if not email or not password:
-            self.auth_status.set_text("請輸入電子郵件與密碼。")
+            self.login_message("請輸入電子郵件與密碼。")
             return
         if self.core:
-            self.auth_busy(True)
-            self.auth_status.set_text("正在登入，請稍候…")
-            self.core.request("login.email", {"email": email, "password": password}, self.auth_reply)
+            self.auth_method = "email"
+            self.login_message("")
+            self.show_login_busy("正在登入，請稍候…")
+            self.reset_qr()
+            self.core.request("login.email", {"email": email, "password": password, "remember": self.auto_login.get_active()}, self.auth_reply)
         self.password_entry.set_text("")
 
+    def reset_password(self):
+        self.login_message("請在手機 LINE 的「設定 › 帳號 › 密碼」重新設定密碼。", error=False)
+
     def auth_busy(self, busy):
-        self.qr_button.set_sensitive(not busy)
-        self.email_button.set_sensitive(not busy)
-        self.cancel_login.set_visible(busy)
         if not busy:
-            self.pin_label.set_visible(False)
+            self.show_login_busy(None)
+            self.pin_label.set_text("")
 
     def auth_reply(self, response):
         if not response.get("ok"):
-            self.auth_busy(False)
-            self.auth_status.set_text(self.error(response))
+            self.auth_failed(self.error(response))
+
+    def auth_failed(self, text):
+        self.auth_busy(False)
+        if self.auth_method == "qr":
+            self.qr_failed = True
+            self.reset_qr()
+        self.login_message(text)
 
     def cancel_auth(self):
         self.password_entry.set_text("")
         if self.core:
             self.core.request("login.cancel", callback=self.auth_reply)
         self.auth_busy(False)
-        self.qr_picture.set_visible(False)
-        self.qr_placeholder.set_visible(True)
-        self.auth_status.set_text("已取消。你可以重新登入。")
+        self.login_message("")
+
+    def login_ready_for_input(self):
+        """Back on the login page: offer a fresh QR code like the official app."""
+        self.auth_busy(False)
+        if self.options.demo or self.restoring:
+            return
+        if self.qr_failed:
+            self.reset_qr()
+        else:
+            self.start_qr()
 
     # -------------------------------------------------------------- workspace
     def build_workspace(self):
@@ -1389,7 +1453,14 @@ class Application(Gtk.Application):
         if texture is None:
             self.toast("照片尚未載入完成。")
             return
-        self.window.get_clipboard().set_texture(texture)
+        # PyGObject has no Clipboard.set_texture; offer the texture itself
+        # plus PNG bytes for apps that only accept image/png.
+        providers = [Gdk.ContentProvider.new_for_value(texture)]
+        try:
+            providers.append(Gdk.ContentProvider.new_for_bytes("image/png", texture.save_to_png_bytes()))
+        except (AttributeError, GLib.Error):
+            pass
+        self.window.get_clipboard().set_content(Gdk.ContentProvider.new_union(providers))
         self.toast("已複製照片")
 
     def save_image(self, message, parent=None):
@@ -1556,9 +1627,29 @@ class Application(Gtk.Application):
             self.render_messages()
 
     # -------------------------------------------------------------- composer
-    def draft_changed(self, *_):
+    def compose_content(self):
+        """The composer's text with U+FFFC for each LINE emoji, and their refs."""
         buffer = self.compose.get_buffer()
-        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False)
+        text = buffer.get_slice(buffer.get_start_iter(), buffer.get_end_iter(), False)
+        refs = []
+        if "\ufffc" in text:
+            cursor = buffer.get_start_iter()
+            while not cursor.is_end():
+                if text[cursor.get_offset()] == "\ufffc":
+                    refs.append(getattr(cursor.get_paintable(), "ref", None))
+                cursor.forward_char()
+        return text, refs
+
+    @staticmethod
+    def emoji_plain(text, refs):
+        """Alt text in place of each emoji, as LINE shows them in plain text."""
+        parts = text.split("\ufffc")
+        if len(parts) != len(refs) + 1:
+            return text.replace("\ufffc", "")
+        return "".join(part + ((refs[i] or {}).get("text", "") if i < len(refs) else "") for i, part in enumerate(parts))
+
+    def draft_changed(self, *_):
+        text = self.emoji_plain(*self.compose_content())
         if self.state.selected:
             self.state.drafts[self.state.selected] = text
         self.compose_placeholder.set_visible(not text)
@@ -1608,17 +1699,22 @@ class Application(Gtk.Application):
         text = self.state.drafts.get(chat_id, "")
         if not self.send_button.get_sensitive():
             return
+        emoji = None
+        if chat_id != KEEP_ID:
+            raw, refs = self.compose_content()
+            if refs and all(refs):
+                text, emoji = raw, refs
         images = list(self.pending_images)
         reply = (self.replying or {}).get("id", "")
         if images and chat_id != KEEP_ID:
             self.clear_tray()
             self.send_images(chat_id, images)
         if text.strip():
-            self.deliver_text(chat_id, text, from_composer=True, reply_to=reply)
+            self.deliver_text(chat_id, text, from_composer=True, reply_to=reply, emoji=emoji)
         self.cancel_reply()
         self.update_send()
 
-    def deliver_text(self, chat_id, text, from_composer=False, reply_to=""):
+    def deliver_text(self, chat_id, text, from_composer=False, reply_to="", emoji=None):
         if chat_id == KEEP_ID:
             item = self.keep.add(text.strip())
             message = self.keep.messages()[-1]
@@ -1638,6 +1734,11 @@ class Application(Gtk.Application):
         temporary = "pending-" + uuid.uuid4().hex
         generation = self.generation
         message = {"id": temporary, "chat_id": chat_id, "text": text, "mine": True, "time": int(time.time() * 1000), "kind": "text", "status": "pending", "reply_to": reply_to}
+        plain = text
+        if emoji:
+            spots = [index for index, char in enumerate(text) if char == "\ufffc"]
+            message["emoji"] = [{"start": at, "end": at + 1, "url": ref.get("url", "")} for at, ref in zip(spots, emoji)]
+            plain = self.emoji_plain(text, emoji)
         self.state.add_message(message)
         if from_composer:
             self.state.drafts[chat_id] = ""
@@ -1655,12 +1756,14 @@ class Application(Gtk.Application):
             else:
                 message["status"] = "failed"
                 if from_composer:
-                    self.state.drafts[chat_id] = text + ("\n" + self.state.drafts[chat_id] if self.state.drafts.get(chat_id) else "")
+                    self.state.drafts[chat_id] = plain + ("\n" + self.state.drafts[chat_id] if self.state.drafts.get(chat_id) else "")
                     if self.state.selected == chat_id:
                         self.compose.get_buffer().set_text(self.state.drafts[chat_id])
                 self.toast(self.error(response), True)
             self.after_message(chat_id)
         params = {"chat_id": chat_id, "text": text}
+        if emoji:
+            params["emoji"] = [{"package_id": ref["package_id"], "sticker_id": ref["sticker_id"]} for ref in emoji]
         if reply_to and not str(reply_to).startswith("pending-"):
             params["reply_to"] = reply_to
         self.core.request("messages.send", params, sent)
@@ -2511,23 +2614,66 @@ class Application(Gtk.Application):
             self.prefs.save_settings(recent_stickers=self.recent_stickers)
 
     def show_sticker_panel(self, packs, chat_id, generation, emoji_only=False):
+        """Mirrors LINE desktop: tabs on top, a wrapping grid of pack icons,
+        a drag handle, then the items of the chosen pack. Stickers send at
+        once; the 表情貼 tab (basic emoji plus owned LINE emoji) types into the
+        composer and keeps the panel open."""
         popover = self.sticker_popover
         packs = [pack for pack in packs if pack.get("stickers")]
-        start = "emoji" if emoji_only or not packs else ("recent" if self.recent_stickers else 0)
-        state = {"kind": "emoji" if start == "emoji" else "sticker", "tab": start if start != "emoji" else (0 if packs else None)}
+        sets = {"sticker": [pack for pack in packs if pack.get("kind") != "emoji"],
+                "emoji": [{"id": "basic", "name": "基本表情", "basic": True}] + [pack for pack in packs if pack.get("kind") == "emoji"]}
+        sticker_start = "recent" if self.recent_stickers else (0 if sets["sticker"] else None)
+        state = {"kind": "emoji" if emoji_only or sticker_start is None else "sticker",
+                 "tab": {"sticker": sticker_start, "emoji": 0}, "query": "", "drag": 0}
         self.sticker_choices = []
         last = {"key": None, "time": 0.0}
         panel = box(V, 0, "sticker-panel")
-        heading = box(H, 0, "sticker-heading")
-        panel.append(heading)
-        content = scroller(box(V, 0))
-        content.set_size_request(372, 300)
-        panel.append(content)
-        strip = box(H, 2, "sticker-strip")
-        strip_scroll = Gtk.ScrolledWindow()
-        strip_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        strip_scroll.set_child(strip)
-        panel.append(strip_scroll)
+        panel.set_size_request(540, 470)
+
+        header = Gtk.CenterBox()
+        header.add_css_class("sticker-header")
+        tabs = box(H, 18, "sticker-tabs")
+        header.set_center_widget(tabs)
+        tools = box(H, 2, halign=END)
+        tools.append(icon_button("search", lambda: toggle_search(), "搜尋", 18, "sticker-tool"))
+        tools.append(icon_button("x", popover.popdown, "關閉", 18, "sticker-tool"))
+        header.set_end_widget(tools)
+        panel.append(header)
+        search = Gtk.SearchEntry(placeholder_text="搜尋")
+        search.add_css_class("sticker-search")
+        search.set_visible(False)
+        search.connect("search-changed", lambda entry: (state.update(query=entry.get_text().casefold().strip()), render_packs()))
+        search.connect("stop-search", lambda *_: toggle_search(False))
+        panel.append(search)
+
+        packs_box = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, column_spacing=2, row_spacing=2)
+        packs_box.add_css_class("sticker-packs")
+        packs_box.set_valign(START)
+        packs_box.set_min_children_per_line(9)
+        packs_box.set_max_children_per_line(9)
+        packs_scroll = Gtk.ScrolledWindow()
+        packs_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        packs_scroll.add_css_class("sticker-packs-area")
+        packs_scroll.set_child(packs_box)
+        panel.append(packs_scroll)
+        # The handle under the pack icons can be dragged, as in LINE. (A
+        # Gtk.Paned warns whenever focus leaves it, so this is a plain drag.)
+        handle = box(H, 0, "sticker-handle")
+        handle.set_cursor_from_name("row-resize")
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", lambda *_: state.update(drag=packs_scroll.get_height()))
+        drag.connect("drag-update", lambda gesture, dx, dy: packs_scroll.set_size_request(-1, max(56, min(300, int(state["drag"] + dy)))))
+        handle.add_controller(drag)
+        panel.append(handle)
+        grid_scroll = Gtk.ScrolledWindow()
+        grid_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        grid_scroll.set_vexpand(True)
+        panel.append(grid_scroll)
+
+        def fit_packs():
+            # Up to two rows of pack icons at first, like LINE; drag for more.
+            icons = len(sets[state["kind"]]) + (1 if state["kind"] == "sticker" and self.recent_stickers else 0)
+            packs_scroll.set_size_request(-1, min(2, max(1, -(-icons // 9))) * 52 + 14)
 
         def send(package_id, sticker):
             key = (package_id, sticker.get("id"))
@@ -2543,53 +2689,94 @@ class Application(Gtk.Application):
             self.remember_sticker(package_id, sticker)
 
         def tile(package_id, sticker):
-            widget = button(self.sticker_tile_picture(sticker, 76), lambda: send(package_id, sticker), "sticker-tile", "傳送貼圖")
+            widget = button(self.sticker_tile_picture(sticker, 64), lambda: send(package_id, sticker), "sticker-tile", "傳送貼圖")
             self.sticker_choices.append(widget)
             return widget
 
-        def render():
-            clear(heading)
-            clear(strip)
-            self.sticker_choices = []
-            for kind, title in (("sticker", "貼圖"), ("emoji", "表情符號")):
+        def toggle_search(show=None):
+            show = not search.get_visible() if show is None else show
+            search.set_visible(show)
+            if show:
+                search.grab_focus()
+            else:
+                search.set_text("")
+
+        def render_tabs():
+            clear(tabs)
+            for kind, title in (("sticker", "貼圖"), ("emoji", "表情貼")):
                 if kind == "sticker" and emoji_only:
                     continue
-                heading.append(button(None, lambda value=kind: choose_kind(value), "sticker-kind" + (" active" if state["kind"] == kind else ""), text=title))
+                tabs.append(button(None, lambda value=kind: choose_kind(value), "sticker-kind" + (" active" if state["kind"] == kind else ""), text=title))
+
+        def add_pack(widget):
+            widget.set_halign(CENTER)
+            packs_box.append(widget)
+
+        def render_packs():
+            clear(packs_box)
+            kind, query = state["kind"], state["query"]
+            current = state["tab"][kind]
+            if kind == "sticker" and self.recent_stickers and not query:
+                add_pack(button(icon("clock", 22), lambda: choose_tab("recent"), "sticker-pack" + (" active" if current == "recent" else ""), "最近使用"))
+            for index, pack in enumerate(sets[kind]):
+                if query and query not in str(pack.get("name", "")).casefold():
+                    continue
+                css = "sticker-pack" + (" active" if current == index else "")
+                if pack.get("basic"):
+                    add_pack(button(None, lambda value=index: choose_tab(value), css + " basic-emoji-pack", pack["name"], text="😊"))
+                else:
+                    add_pack(button(self.sticker_tile_picture(pack["stickers"][0], 36), lambda value=index: choose_tab(value), css, pack.get("name", "貼圖")))
+
+        def render_grid():
+            self.sticker_choices = []
             grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, column_spacing=4, row_spacing=4)
             grid.add_css_class("sticker-grid")
-            grid.set_valign(Gtk.Align.START)
+            grid.set_valign(START)
+            current = state["tab"][state["kind"]]
             if state["kind"] == "emoji":
-                grid.set_min_children_per_line(8)
-                grid.set_max_children_per_line(8)
-                for glyph in EMOJI:
-                    grid.append(button(None, lambda value=glyph: self.insert_emoji(value), "emoji", f"插入 {glyph}", text=glyph))
-                content.set_child(grid)
-                strip_scroll.set_visible(False)
+                pack = sets["emoji"][current]
+                if pack.get("basic"):
+                    grid.set_min_children_per_line(10)
+                    grid.set_max_children_per_line(10)
+                    for glyph in BASIC_EMOJI:
+                        grid.append(button(None, lambda value=glyph: self.insert_emoji(value), "emoji", f"插入 {glyph}", text=glyph))
+                else:
+                    grid.set_min_children_per_line(8)
+                    grid.set_max_children_per_line(8)
+                    for sticker in pack["stickers"]:
+                        widget = button(self.sticker_tile_picture(sticker, 40), lambda value=sticker: self.insert_sticon(value), "sticker-tile emoji-tile", sticker.get("text") or "表情貼")
+                        self.sticker_choices.append(widget)
+                        grid.append(widget)
+                grid_scroll.set_child(grid)
                 return
-            strip_scroll.set_visible(True)
-            grid.set_min_children_per_line(4)
-            grid.set_max_children_per_line(4)
-            if self.recent_stickers:
-                strip.append(button(icon("clock", 20), lambda: choose_tab("recent"), "sticker-pack" + (" active" if state["tab"] == "recent" else ""), "最近使用"))
-            for index, pack in enumerate(packs):
-                strip.append(button(self.sticker_tile_picture(pack["stickers"][0], 28), lambda value=index: choose_tab(value),
-                                    "sticker-pack" + (" active" if state["tab"] == index else ""), pack.get("name", "貼圖")))
-            if state["tab"] == "recent":
+            grid.set_min_children_per_line(6)
+            grid.set_max_children_per_line(6)
+            if current == "recent":
                 for entry in self.recent_stickers:
                     grid.append(tile(entry["package_id"], entry))
-            elif state["tab"] is not None:
-                pack = packs[state["tab"]]
+            elif current is not None:
+                pack = sets["sticker"][current]
                 for sticker in pack["stickers"]:
                     grid.append(tile(sticker.get("package_id") or pack["id"], sticker))
-            content.set_child(grid)
+            grid_scroll.set_child(grid)
+
+        def render():
+            render_tabs()
+            render_packs()
+            render_grid()
 
         def choose_kind(value):
-            state["kind"] = value
+            if state["kind"] != value:
+                state["kind"] = value
+                fit_packs()
             render()
 
         def choose_tab(value):
-            state["tab"] = value
-            render()
+            state["tab"][state["kind"]] = value
+            render_packs()
+            render_grid()
+            grid_scroll.get_vadjustment().set_value(0)
+        fit_packs()
         render()
         popover.set_child(panel)
         popover.popup()
@@ -2598,6 +2785,28 @@ class Application(Gtk.Application):
         buffer = self.compose.get_buffer()
         buffer.insert_at_cursor(glyph)
         self.compose.grab_focus()
+
+    def insert_sticon(self, sticker):
+        """Puts an owned LINE emoji into the composer at the cursor, as an
+        inline picture; send_text turns it back into a sticon reference."""
+        url = str(sticker.get("url", ""))
+        ref = {"package_id": str(sticker.get("package_id", "")), "sticker_id": str(sticker.get("id", "")),
+               "text": str(sticker.get("text") or "(emoji)"), "url": url}
+        chat_id = self.state.selected
+        if not url or not ref["package_id"] or not ref["sticker_id"]:
+            return
+
+        def loaded(data):
+            if self.state.selected != chat_id:
+                return
+            try:
+                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            except GLib.Error:
+                return
+            buffer = self.compose.get_buffer()
+            buffer.insert_paintable(buffer.get_iter_at_mark(buffer.get_insert()), InlineEmoji(texture, 22, ref))
+            self.compose.grab_focus()
+        self.pictures.load(url, loaded)
 
     def sticker_picture(self, url, width, height):
         picture = Gtk.Picture()
@@ -2845,7 +3054,7 @@ class Application(Gtk.Application):
             return "已收回訊息"
         kind = message.get("kind") or "text"
         if kind == "text":
-            return str(message.get("text") or "").replace("\ufffc", "").replace("\n", " ")
+            return str(message.get("text") or "").replace("\ufffc", "(表情貼)").replace("\n", " ")
         return media_label(message)
 
     def queue_files(self, paths, chat_id):
@@ -3027,10 +3236,7 @@ class Application(Gtk.Application):
         self.password_entry.set_text("")
         self.email_entry.set_text("")
         self.search.set_text("")
-        self.qr_picture.set_paintable(None)
-        self.qr_picture.set_visible(False)
-        self.qr_placeholder.set_visible(True)
-        self.pin_label.set_text("")
+        self.reset_qr()
         self.auth_busy(False)
         self.pages.set_visible_child_name("login")
         self.section = "chats"
@@ -3078,7 +3284,11 @@ class Application(Gtk.Application):
                 self.show_restoring(False)
             if state == "logged_out":
                 self.clear_session()
-                self.auth_status.set_text(data.get("message") or "使用手機 LINE 掃描行動條碼，或以電子郵件登入。")
+                message = data.get("message") or ""
+                # Routine messages need no banner: the page itself says what to do.
+                if message and message not in LOGIN_ROUTINE and not self.auth_status.get_visible():
+                    self.login_message(message)
+                self.login_ready_for_input()
                 return
             self.state.session = state
             if data.get("profile"):
@@ -3089,9 +3299,10 @@ class Application(Gtk.Application):
                 self.pages.set_visible_child_name("workspace")
                 self.auth_busy(False)
                 self.password_entry.set_text("")
-                self.qr_picture.set_paintable(None)
-                self.pin_label.set_text("")
-                if self.state.mode != "demo" and self.persistent is False:
+                self.login_message("")
+                self.qr_failed = False
+                self.reset_qr()
+                if self.state.mode != "demo" and self.persistent is False and self.auto_login.get_active():
                     self.set_footer("已連線 · 登入未保存至鑰匙圈", "warning")
                 else:
                     self.set_footer("")
@@ -3100,8 +3311,7 @@ class Application(Gtk.Application):
             elif state == "error":
                 self.set_footer("連線已中斷", "error")
                 self.toast(data.get("message", "連線發生錯誤"), True)
-                self.auth_busy(False)
-                self.auth_status.set_text(data.get("message", "請重新登入。"))
+                self.auth_failed(data.get("message", "請重新登入。"))
             self.update_send()
         elif event == "snapshot":
             if self.state.session == "logged_out":
@@ -3168,26 +3378,25 @@ class Application(Gtk.Application):
         elif event == "auth":
             stage = data.get("stage")
             if stage == "qr":
-                self.login_view("qr")
                 try:
                     png = base64.b64decode(data.get("qr_png", ""), validate=True)
                     if not png:
                         raise ValueError("missing QR image")
                     texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png))
-                    self.qr_picture.set_paintable(texture)
-                    self.qr_picture.set_visible(True)
+                    self.qr_placeholder.set_spinning(False)
                     self.qr_placeholder.set_visible(False)
-                    self.auth_status.set_text("請使用手機 LINE 掃描上方行動條碼。")
+                    self.qr_button.set_visible(False)
+                    self.qr_picture.set_from_paintable(texture)
                 except (ValueError, GLib.Error):
-                    self.auth_status.set_text("無法顯示行動條碼。請改用電子郵件登入，或重新產生。")
-                    self.auth_busy(False)
+                    self.auth_failed("無法顯示行動條碼。請改用電子郵件登入，或重新產生。")
             elif stage == "pin":
                 self.pin_label.set_text(str(data.get("pin", "")))
-                self.pin_label.set_visible(True)
-                self.auth_status.set_text(data.get("message") or "請在手機 LINE 輸入上方驗證碼。")
+                if data.get("message"):
+                    self.pin_hint.set_text(data["message"])
+                self.restore_spinner.set_spinning(False)
+                self.login_left.set_visible_child_name("pin")
             elif stage == "error":
-                self.auth_busy(False)
-                self.auth_status.set_text(data.get("message", "登入失敗，請重新嘗試。"))
+                self.auth_failed(data.get("message", "登入失敗，請重新嘗試。"))
 
     def notify(self, message):
         chat_id = str(message.get("chat_id", ""))
@@ -3266,12 +3475,15 @@ class Application(Gtk.Application):
             self.finish_smoke()
             return GLib.SOURCE_REMOVE
         if step == 0:
-            self.login_view("email")
-            self.email_button.emit("clicked")
-            self.check("email form validates empty credentials", "請輸入" in self.auth_status.get_text())
-            self.login_view("qr")
+            self.check("login button waits for e-mail and password", not self.email_button.get_sensitive())
+            self.email_entry.set_text("demo@example.com")
+            self.password_entry.set_text("x")
+            self.check("login button enables when both are filled", self.email_button.get_sensitive())
+            self.email_entry.set_text("")
+            self.password_entry.set_text("")
+            self.check("QR pane and 自動登入 are on the login page", self.qr_frame.get_parent() is not None and self.auto_login.get_label() == "自動登入")
             self.on_event("auth", {"stage": "pin", "pin": "1234", "message": "請在手機輸入驗證碼"})
-            self.check("PIN view shows verification code", self.pin_label.get_visible() and self.pin_label.get_text() == "1234")
+            self.check("PIN view shows verification code", self.login_left.get_visible_child_name() == "pin" and self.pin_label.get_text() == "1234")
             self.auth_busy(False)
             self.smoke_phase = 1
         elif step == 1 and self.state.session == "ready" and len(self.state.chats) > 1:

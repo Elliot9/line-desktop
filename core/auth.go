@@ -59,6 +59,7 @@ func (b *backend) api() *line.Client { return apiClient(b.ctx, b.session.AccessT
 func (b *backend) beginRestore() {
 	b.stop()
 	b.restoring = true
+	b.forget = false
 	b.sessionEvent("connecting", "正在恢復上次的登入…")
 	ctx, cancel := context.WithCancel(b.ctx)
 	b.loginCancel = cancel
@@ -440,6 +441,13 @@ func (b *backend) preservePhoneNotifications() {
 }
 func (b *backend) saveSession() {
 	if b.session == nil {
+		return
+	}
+	if b.forget {
+		b.persistent = false
+		if b.stored && b.store.Clear(b.ctx) == nil {
+			b.stored = false
+		}
 		return
 	}
 	if err := b.store.Save(b.ctx, b.session); err != nil {

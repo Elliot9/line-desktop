@@ -101,7 +101,7 @@ def media_label(message):
 
 def preview(message, chat):
     text = message.get("text") if message.get("kind") in ("text", None) else media_label(message)
-    text = str(text or media_label(message))
+    text = str(text or media_label(message)).replace("\ufffc", "(表情貼)")
     if chat.get("kind") == "group":
         return ("你" if message.get("mine") else str(message.get("sender_name") or "成員")) + "：" + text
     return text
@@ -176,7 +176,7 @@ class Notes:
 class Preferences:
     """Per-account pinned, muted and favourite chats plus app-wide settings."""
 
-    defaults = {"enter_send": True, "notifications": True, "font_size": 14, "theme": "system", "recent_stickers": []}
+    defaults = {"enter_send": True, "notifications": True, "font_size": 14, "theme": "system", "recent_stickers": [], "auto_login": True}
 
     def __init__(self):
         self.root = data_root() / "preferences"

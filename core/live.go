@@ -181,10 +181,12 @@ func (b *backend) preview(row chat, m message) string {
 	case m.Kind == "file":
 		return name + "傳送了檔案"
 	}
+	// LINE emoji sit in Text as U+FFFC; previews name them instead.
+	text := strings.ReplaceAll(m.Text, "\uFFFC", "(表情貼)")
 	if row.Kind != "direct" && !m.Mine && m.Kind == "text" {
-		return name + "：" + m.Text
+		return name + "：" + text
 	}
-	return m.Text
+	return text
 }
 
 // fillGroup fetches one group's name, picture and members (live mode only).

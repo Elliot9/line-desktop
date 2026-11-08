@@ -69,16 +69,28 @@
 .line-window.dark popover.line-popover > contents { background: #262626; border-color: #383838; box-shadow: 0 8px 35px rgba(0, 0, 0, 0.45); }
 .line-window.dark .line-popover button { color: #ccc; }
 .line-window.dark .line-popover button:hover { background: #333; }
-.line-window.dark .sticker-heading { border-bottom-color: #333; }
+.line-window.dark .sticker-header { border-bottom-color: #333; }
+.line-window.dark .sticker-packs-area { background: #161616; }
+.line-window.dark .line-popover button.sticker-pack:hover { background: #2a2a2a; }
+.line-window.dark .line-popover button.sticker-tool { color: #aaa; }
+.line-window.dark .line-popover button.sticker-tool:hover { color: #fff; }
+.line-window.dark .sticker-handle { background-image: linear-gradient(#555, #555), linear-gradient(#555, #555); background-size: 28px 1px, 28px 1px; background-position: center 4px, center 7px; background-repeat: no-repeat; }
 .line-window.dark .line-popover button.sticker-kind.active, .line-window.dark .line-popover button.sticker-kind.active.text-button { color: #fff; border-bottom-color: #fff; }
-.line-window.dark .sticker-strip { background: #222; border-top-color: #333; }
 .line-window.dark .line-popover button.sticker-pack.active { background: #3a3a3a; }
 .line-window.dark .line-popover button.sticker-tile:hover, .line-window.dark .line-popover button.emoji:hover { background: #333; }
 
-.line-window.dark .login { background: #1b1b1b; }
-.line-window.dark .login-card { background: #262626; border-color: #333; }
-.line-window.dark .login-art { background: #222; border-right-color: #333; }
-.line-window.dark .qr-box { background: #fff; }
+.line-window.dark .login, .line-window.dark .login-side { background: #2b2b2d; }
+.line-window.dark .login-side { border-left-color: #3e3e40; }
+.line-window.dark .login-fields { border-color: #555; }
+.line-window.dark .login-fields separator { background: #555; }
+.line-window.dark .login-fields entry, .line-window.dark .login-fields passwordentry, .line-window.dark .login-fields text { color: #eee; }
+.line-window.dark button.login-submit:disabled { background: #b4b4b4; color: #dadada; }
+.line-window.dark .login-check, .line-window.dark button.login-link, .line-window.dark .login-status { color: #c8c8c8; }
+.line-window.dark .login-qr-title { color: #e6e6e6; }
+.line-window.dark .login-qr-text { color: #9a9a9a; }
+.line-window.dark .login-qr { border-color: #fff; }
+.line-window.dark button.login-cancel { color: #ddd; border-color: #555; }
+.line-window.dark menubutton.login-tool > button, .line-window.dark button.login-tool { color: #aaa; }
 
 /* Primary text colours that style.css pins to near-black. */
 .line-window.dark .side-title, .line-window.dark .chat-name, .line-window.dark .chat-title,
@@ -92,3 +104,5 @@
 .line-window.dark .field dropdown > button { background: #1f1f1f; border-color: #3a3a3a; color: #eee; }
 .line-window.dark .toggle-line { border-bottom-color: #333; color: #bbb; }
 .line-window.dark .field-label { color: #999; }
+.line-window.dark .login-check check { border-color: #8a8a8a; }
+.line-window.dark .login-check check:checked { border-color: #06c755; }
