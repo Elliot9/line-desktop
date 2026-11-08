@@ -191,5 +191,6 @@ scripts/package.sh amd64        # 打包到 dist/，附 SHA256
 
 - LINE 通訊協定與加密使用 [beeper/line](https://github.com/beeper/line)（MIT 授權），詳見 [第三方聲明](THIRD_PARTY.md)。
 - 介面中的插畫、人物與小熊貼圖為本專案原創。
+- 本專案以 [MIT 授權](LICENSE) 釋出。
 
 **本專案是非官方的第三方用戶端，與 LY Corporation（LINE）沒有任何關係，也未獲其認可。** LINE 是 LY Corporation 的商標。

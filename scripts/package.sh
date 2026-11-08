@@ -13,7 +13,7 @@ staging=$(mktemp -d "$project_dir/.build/package.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 mkdir -p "$staging/line-desktop/bin" dist
 tar --exclude='__pycache__' --exclude='*.pyc' --exclude='docs/images' -cf - \
-    line-app VERSION README.md THIRD_PARTY.md index.html core desktop docs scripts |
+    line-app VERSION LICENSE README.md THIRD_PARTY.md index.html core desktop docs scripts |
     tar -xf - -C "$staging/line-desktop"
 echo "建置 Linux $target_arch 可攜套件…" >&2
 (cd core && CGO_ENABLED=0 GOOS=linux GOARCH="$target_arch" GOTOOLCHAIN=local \
