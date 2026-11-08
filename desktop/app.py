@@ -12,6 +12,8 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
 from . import art
+from . import avatar as avatar_module
+from . import ui as ui_module
 from .art import Art, EMOJI, MOODS
 from .ipc import Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
@@ -85,17 +87,29 @@ class Application(Gtk.Application):
         self.keep = Keep()
         self.core = None
         self.pictures = Pictures(self.dispatch)
+        avatar_module.LOADER = self.pictures
+        ui_module.PEOPLE = self.state.avatar_of
         self.window = None
         self.section = "chats"
         self.filter = "all"
         self.detail_tab = "info"
-        self.details_open = True
+        self.details_open = False
         self.details_auto = True
         self.message_search = ""
         self.persistent = None
         self.modal = None
         self.modal_kind = ""
         self.popover_message = None
+        self.collapsed = set()
+        self.stick_bottom = True
+        self.recent_stickers = [] if self.options.demo else list(self.prefs.settings["recent_stickers"])
+        self.snap_pending = False
+        self.pending_images = []
+        self.image_textures = {}
+        self.image_bytes = {}
+        self.replying = None
+        self.screenshot_signal = 0
+        self.context_popover = None
         self.toast_timer = 0
         self.width_class = ""
         self.bubble_chars = 60
@@ -119,19 +133,31 @@ class Application(Gtk.Application):
         if self.window:
             self.window.present()
             return
-        settings = Gtk.Settings.get_default()
-        if settings:
-            settings.set_property("gtk-application-prefer-dark-theme", False)
-        provider = Gtk.CssProvider()
-        provider.load_from_path(str(ASSETS / "style.css"))
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        for sheet in ("style.css", "dark.css"):
+            provider = Gtk.CssProvider()
+            provider.load_from_path(str(ASSETS / sheet))
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.window = Gtk.ApplicationWindow(application=self)
         self.window.add_css_class("line-window")
+        self.system_dark = False
+        self.watch_color_scheme()
+        self.apply_theme()
         self.window.add_css_class(f"font-{self.prefs.settings['font_size']}")
         self.window.set_title("LINE" + (" · 離線展示" if self.options.demo else ""))
-        self.window.set_default_size(1400, 880)
-        self.window.set_size_request(1050, 650)
+        self.window.set_default_size(1100, 760)
+        self.window.set_size_request(760, 520)
         self.window.set_titlebar(self.build_titlebar())
+        # Closing the window keeps LINE running so messages and notifications
+        # still arrive (Ctrl+Q or 「結束 LINE」 quits). Demo mode simply exits.
+        self.window.set_hide_on_close(not self.options.demo)
+        self.window.connect("notify::is-active", self.focus_changed)
+        for name, handler, accels in (("quit", lambda *_: self.quit(), ["<Control>q"]),
+                                      ("open-chat", self.open_chat_action, [])):
+            action = Gio.SimpleAction.new(name, GLib.VariantType.new("s") if name == "open-chat" else None)
+            action.connect("activate", handler)
+            self.add_action(action)
+            if accels:
+                self.set_accels_for_action("app." + name, accels)
         self.overlay = Gtk.Overlay()
         self.pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.pages.set_hexpand(True)
@@ -161,6 +187,14 @@ class Application(Gtk.Application):
         if self.options.smoke_test:
             GLib.timeout_add(250, self.smoke_tick)
 
+    def open_chat_action(self, _action, value):
+        chat_id = value.get_string()
+        if self.window:
+            self.window.present()
+            if chat_id in self.state.chats:
+                self.navigate("chats")
+                self.select_chat(chat_id)
+
     def initialized(self, response):
         if not response.get("ok"):
             self.toast(self.error(response), True)
@@ -173,7 +207,7 @@ class Application(Gtk.Application):
     def build_titlebar(self):
         header = Gtk.HeaderBar()
         header.add_css_class("titlebar")
-        header.set_decoration_layout("close,minimize,maximize:")
+        # Follow the desktop's button layout (GNOME: ":close", KDE etc.).
         header.set_title_widget(label("LINE", "titlebar-name"))
         if self.options.demo:
             pill = box(H, 8, "demo-pill", valign=CENTER)
@@ -194,9 +228,6 @@ class Application(Gtk.Application):
         mark.append(label("LINE Desktop", "wordmark"))
         mark.append(label(".", "wordmark-dot"))
         top.append(mark)
-        tagline = label("通訊，簡單一點。", "wordmark-tagline", xalign=0)
-        tagline.set_valign(CENTER)
-        top.append(tagline)
         page.append(top)
         card = box(H, 0, "login-card", halign=CENTER, valign=CENTER, vexpand=True)
         card.set_margin_bottom(60)
@@ -346,63 +377,76 @@ class Application(Gtk.Application):
         self.main_stack = Gtk.Stack()
         self.main_stack.set_hexpand(True)
         self.main_stack.add_named(self.build_chat_page(), "chat")
-        self.alternate = box(V, 0)
-        self.main_stack.add_named(scroller(self.alternate, "alternate"), "alternate")
+        welcome = box(V, 0, "welcome", vexpand=True, valign=CENTER, halign=CENTER)
+        welcome.append(label("LINE", "welcome-mark", xalign=0.5))
+        self.main_stack.add_named(welcome, "empty")
         self.app_box.append(self.main_stack)
         self.pages.add_named(self.app_box, "workspace")
 
     def build_rail(self):
-        rail = box(V, 9, "rail")
-        rail.set_size_request(74, -1)
-        logo = self.logo()
-        logo.set_halign(CENTER)
-        rail.append(logo)
+        # LINE PC: a narrow navy strip with three filled glyphs (好友, 聊天,
+        # 加入好友) on top and Keep, settings and "•••" at the bottom.
+        rail = box(V, 6, "rail")
+        rail.set_size_request(62, -1)
         self.nav_buttons = {}
-        for key, name, title in (("chats", "chat", "聊天"), ("friends", "friends", "好友"), ("calls", "phone", "通話"), ("keep", "bookmark", "Keep 筆記")):
-            contents = box(V, 5, valign=CENTER)
-            image = icon(name, 22)
-            image.set_halign(CENTER)
-            contents.append(image)
-            contents.append(label(title, xalign=0.5, wrap=True, max_chars=6))
+        for key, name, title, accel in (("friends", "rail-friends", "好友", "Ctrl+1"), ("chats", "rail-chats", "聊天", "Ctrl+2"), ("add", "rail-add", "加入好友", "Ctrl+3")):
             layer = Gtk.Overlay()
-            layer.set_child(contents)
-            item = button(layer, lambda value=key: self.navigate(value), "rail-btn", title)
+            glyph = icon(name, 26)
+            glyph.set_halign(CENTER)
+            glyph.set_valign(CENTER)
+            layer.set_child(glyph)
+            item = button(layer, lambda value=key: self.navigate(value), "rail-btn", f"{title}（{accel}）")
             item.set_halign(CENTER)
             if key == "chats":
-                self.navdot = box(css="navdot", halign=END, valign=START)
+                self.navdot = label("", "navdot", xalign=0.5)
+                self.navdot.set_halign(END)
+                self.navdot.set_valign(START)
                 self.navdot.set_visible(False)
                 self.navdot.set_can_target(False)
                 layer.add_overlay(self.navdot)
             self.nav_buttons[key] = item
             rail.append(item)
         rail.append(box(vexpand=True))
-        for name, title, callback in (("help", "使用說明", self.open_help), ("settings", "設定", self.open_settings)):
-            item = icon_button(name, callback, title, 20, "rail-btn")
-            item.set_halign(CENTER)
-            rail.append(item)
+        keep = icon_button("bookmark", lambda: self.navigate("keep"), "Keep", 20, "rail-btn small")
+        keep.set_halign(CENTER)
+        self.nav_buttons["keep"] = keep
+        rail.append(keep)
+        self.more_button = Gtk.MenuButton()
+        self.more_button.add_css_class("rail-btn")
+        self.more_button.add_css_class("small")
+        self.more_button.set_child(icon("dots", 20))
+        self.more_button.set_tooltip_text("更多")
+        self.more_button.set_halign(CENTER)
+        self.more_button.set_direction(Gtk.ArrowType.RIGHT)
+        menu = Gtk.Popover(has_arrow=False)
+        menu.add_css_class("line-popover")
+        items = box(V, 0)
+        for title, callback in (("設定", self.open_settings), ("使用說明", self.open_help), ("登出", self.logout), ("結束 LINE", self.quit)):
+            items.append(button(label(title), lambda action=callback: (menu.popdown(), action()), None))
+        menu.set_child(items)
+        self.more_button.set_popover(menu)
+        rail.append(self.more_button)
         self.self_button = button(person_avatar("me", "me", 30, 16), lambda: self.open_profile(self.state.profile.get("id", "")), "rail-self", "我的個人檔案")
-        self.self_button.set_halign(CENTER)
-        rail.append(self.self_button)
+        self.self_button.set_visible(False)
         return rail
 
     def build_sidebar(self):
         self.sidebar = box(V, 0, "sidebar")
         self.sidebar.set_size_request(270, -1)
         top = box(V, 0, "side-top")
-        title_row = box(H, 0)
-        title_row.set_margin_bottom(21)
+        title_row = box(H, 0, "side-title-row")
         self.side_title = label("聊天", "side-title")
         self.side_title.set_hexpand(True)
         title_row.append(self.side_title)
         self.side_action = icon_button("edit", self.side_button_clicked, "建立群組", 18)
         title_row.append(self.side_action)
         top.append(title_row)
-        self.search = Gtk.Text(placeholder_text="搜尋好友或聊天室")
+        self.search = Gtk.Text(placeholder_text="搜尋聊天和訊息")
         self.search.set_hexpand(True)
         self.search.connect("changed", lambda *_: self.search_changed())
         top.append(self.searchbox(self.search))
-        self.filter_row = box(H, 7)
-        self.filter_row.set_margin_top(15)
+        self.filter_row = box(H, 4)
+        self.filter_row.set_margin_top(10)
         top.append(self.filter_row)
         self.sidebar.append(top)
         self.chat_list = box(V, 0)
@@ -411,7 +455,8 @@ class Application(Gtk.Application):
         footer = box(H, 6, "side-footer")
         self.footer = footer
         footer.append(dot())
-        self.connection = label("每一段對話，都在這裡。")
+        self.connection = label("")
+        footer.set_visible(False)
         footer.append(self.connection)
         self.sidebar.append(footer)
         return self.sidebar
@@ -433,30 +478,27 @@ class Application(Gtk.Application):
         heading = box(H, 12, valign=CENTER, hexpand=True)
         self.header_avatar_slot = box(valign=CENTER)
         heading.append(self.header_avatar_slot)
-        titles = box(V, 6, valign=CENTER)
-        title_line = box(H, 0)
+        titles = box(V, 2, valign=CENTER)
+        title_line = box(H, 6)
         self.chat_title = label("讓對話，從這裡開始。", "chat-title", ellipsize=True, max_chars=26)
         title_line.append(self.chat_title)
-        self.muted_tag = label(" · 已靜音", "muted-tag")
+        self.muted_tag = icon("belloff", 13, "muted-tag")
         self.muted_tag.set_visible(False)
         title_line.append(self.muted_tag)
         titles.append(title_line)
         subtitle = box(H, 6, "chat-subtitle")
-        subtitle.append(dot())
-        self.chat_subtitle = label("選擇左側聊天或好友")
+        self.chat_subtitle = label("")
         subtitle.append(self.chat_subtitle)
+        self.subtitle_row = subtitle
         titles.append(subtitle)
         heading.append(titles)
         header.append(heading)
         actions = box(H, 10, "header-actions", valign=CENTER)
         actions.append(icon_button("search", self.open_search, "搜尋對話", 18))
-        self.call_buttons = [box(css="header-divider", valign=CENTER),
-                             icon_button("phone", lambda: self.unsupported("此版本不提供語音通話。"), "語音通話", 19),
-                             icon_button("video", lambda: self.unsupported("此版本不提供視訊通話。"), "視訊通話", 20)]
+        self.call_buttons = [icon_button("phone", lambda: self.unsupported("此版本不提供語音與視訊通話，請使用手機或官方 LINE。"), "通話", 19)]
         for widget in self.call_buttons:
             actions.append(widget)
-        actions.append(box(css="header-divider", valign=CENTER))
-        self.details_toggle = icon_button("info", self.toggle_details, "聊天室資訊", 19)
+        self.details_toggle = icon_button("more-v", self.toggle_details, "選單", 19)
         actions.append(self.details_toggle)
         header.append(actions)
         page.append(header)
@@ -477,6 +519,9 @@ class Application(Gtk.Application):
         conversation.append(self.search_bar)
         self.history = box(V, 0, "messages")
         self.history_scroll = scroller(self.history)
+        vertical = self.history_scroll.get_vadjustment()
+        vertical.connect("changed", self.history_resized)
+        vertical.connect("value-changed", self.history_scrolled)
         self.menu = Gtk.Popover(has_arrow=False, autohide=True)
         self.menu.add_css_class("line-popover")
         display = Gdk.Display.get_default()
@@ -503,6 +548,7 @@ class Application(Gtk.Application):
         split.append(conversation)
         self.details = box(V, 0, "details")
         self.details.set_size_request(238, -1)
+        self.details.set_visible(False)
         self.detail_contents = box(V, 0)
         self.details.append(scroller(self.detail_contents))
         split.append(self.details)
@@ -510,20 +556,20 @@ class Application(Gtk.Application):
         return page
 
     def build_composer(self):
+        # LINE PC: the text area sits on top; the toolbar (attach, Keep,
+        # screenshot ▾ … emoji) runs along the bottom edge.
         composer = box(V, 0, "composer")
-        toolbar = box(H, 8, "composer-toolbar")
-        self.sticker_button = icon_button("smile", self.open_stickers, "貼圖與表情符號")
-        self.photo_button = icon_button("image", lambda: self.choose_files(images=True), "傳送照片（以檔案傳送）")
-        self.file_button = icon_button("file", self.choose_files, "傳送檔案")
-        crop = icon_button("crop", lambda: self.unsupported("此版本不提供擷取畫面。"), "擷取畫面")
-        self.keep_button = icon_button("bookmark", lambda: self.select_chat(KEEP_ID), "Keep 筆記")
-        for widget in (self.sticker_button, self.photo_button, self.file_button, crop, self.keep_button):
-            toolbar.append(widget)
-        end = label("讓日常，保持聯繫", "toolbar-end", xalign=1)
-        end.set_hexpand(True)
-        toolbar.append(end)
-        composer.append(toolbar)
-        row = box(H, 14, valign=END)
+        self.reply_bar = box(H, 8, "reply-bar")
+        self.reply_bar.set_visible(False)
+        self.reply_text = label("", "reply-text", ellipsize=True)
+        self.reply_text.set_hexpand(True)
+        self.reply_bar.append(icon("reply", 14))
+        self.reply_bar.append(self.reply_text)
+        self.reply_bar.append(icon_button("x", self.cancel_reply, "取消回覆", 14))
+        composer.append(self.reply_bar)
+        self.tray = box(H, 8, "tray")
+        self.tray.set_visible(False)
+        composer.append(self.tray)
         self.compose = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.compose.add_css_class("compose-input")
         self.compose.set_accepts_tab(False)
@@ -534,34 +580,53 @@ class Application(Gtk.Application):
         self.compose.add_controller(key)
         compose_scroll = Gtk.ScrolledWindow()
         compose_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        compose_scroll.set_min_content_height(49)
-        compose_scroll.set_max_content_height(110)
+        compose_scroll.set_min_content_height(60)
+        compose_scroll.set_max_content_height(160)
         compose_scroll.set_propagate_natural_height(True)
         compose_scroll.set_child(self.compose)
         layer = Gtk.Overlay()
         layer.set_child(compose_scroll)
         layer.set_hexpand(True)
-        self.compose_placeholder = label("輸入訊息，分享今天的大小事…", "compose-placeholder")
+        self.compose_placeholder = label("輸入訊息", "compose-placeholder")
         self.compose_placeholder.set_valign(START)
         self.compose_placeholder.set_halign(START)
         self.compose_placeholder.set_can_target(False)
         layer.add_overlay(self.compose_placeholder)
-        row.append(layer)
-        send_icon = icon("send", 17)
+        composer.append(layer)
+        toolbar = box(H, 4, "composer-toolbar")
+        self.file_button = icon_button("clip", self.choose_files, "傳送檔案", 20)
+        self.photo_button = icon_button("image", lambda: self.choose_files(images=True), "傳送照片", 20)
+        self.keep_button = icon_button("bookmark", self.save_draft_to_keep, "儲存至 Keep", 19)
+        self.screenshot_button = icon_button("crop", self.take_screenshot, "擷取畫面", 19)
+        for widget in (self.file_button, self.photo_button, self.keep_button, self.screenshot_button):
+            toolbar.append(widget)
+        toolbar.append(box(hexpand=True))
+        self.sticker_button = icon_button("smile", self.open_stickers, "貼圖、表情貼", 21)
+        toolbar.append(self.sticker_button)
+        self.sticker_popover = Gtk.Popover(has_arrow=False, autohide=True, position=Gtk.PositionType.TOP)
+        self.sticker_popover.add_css_class("line-popover")
+        self.sticker_popover.set_parent(self.sticker_button)
+        self.sticker_popover.connect("closed", lambda *_: self.compose.grab_focus())
+        send_icon = icon("send", 16)
         send_icon.set_halign(CENTER)
         send_icon.set_valign(CENTER)
-        self.send_button = button(send_icon, self.send_text, "send", "傳送訊息")
-        self.send_button.set_valign(END)
-        row.append(self.send_button)
-        composer.append(row)
-        hints = box(H, 0, "composer-hint")
-        self.enter_hint = label("")
-        self.enter_hint.set_hexpand(True)
-        hints.append(self.enter_hint)
-        self.composer_note = label("", xalign=1)
-        hints.append(self.composer_note)
-        composer.append(hints)
+        self.send_button = button(send_icon, self.send_text, "send", "傳送（Enter）")
+        self.send_button.set_valign(CENTER)
+        toolbar.append(self.send_button)
+        composer.append(toolbar)
+        self.composer_progress = label("", "composer-progress")
+        self.composer_progress.set_visible(False)
+        composer.insert_child_after(self.composer_progress, self.tray)
         return composer
+
+    def save_draft_to_keep(self):
+        draft = self.state.drafts.get(self.state.selected, "").strip()
+        if not draft:
+            self.select_chat(KEEP_ID)
+            return
+        self.keep.add(draft)
+        self.state.chats.get(KEEP_ID, {}).update(self.keep.chat())
+        self.toast("已儲存至 Keep")
 
     # ---------------------------------------------------------- responsiveness
     def responsive(self, width):
@@ -581,9 +646,9 @@ class Application(Gtk.Application):
             self.details.set_size_request(detail, -1)
             self.detail_width = detail
         if self.details_auto:
-            self.details_open = window_width > 1150
+            self.details_open = False
         self.details.set_visible(self.details_open)
-        messages = window_width - 74 - side - (detail if self.details_open else 0) - 58
+        messages = window_width - 62 - side - (detail if self.details_open else 0) - 58
         chars = max(24, int(messages * 0.81 / 6.6))
         if chars != self.bubble_chars:
             self.bubble_chars = chars
@@ -597,38 +662,46 @@ class Application(Gtk.Application):
         if section == "keep":
             self.select_chat(KEEP_ID)
             return
+        if section == "add":
+            self.unsupported("此版本無法加入好友。請在手機 LINE 以 ID、QR 碼或電話號碼加入後，這裡會自動出現。")
+            return
         self.section = section
         self.filter = "all"
         self.search.set_text("")
         self.render_rail()
         self.render_sidebar()
-        self.main_stack.set_visible_child_name("alternate" if section in ("friends", "calls") else "chat")
-        if section in ("friends", "calls"):
-            self.render_alternate()
+        if section == "friends":
+            # The friends page keeps the right pane: an open chat stays open.
+            if not self.state.selected:
+                self.main_stack.set_visible_child_name("empty")
+        elif self.state.selected:
+            self.main_stack.set_visible_child_name("chat")
+        else:
+            self.main_stack.set_visible_child_name("empty")
 
     def render_rail(self):
         active = "keep" if self.section == "chats" and self.state.selected == KEEP_ID else self.section
         for key, widget in self.nav_buttons.items():
             widget.add_css_class("active") if key == active else widget.remove_css_class("active")
             widget.queue_draw()
-        self.navdot.set_visible(any(chat.get("unread") for chat in self.state.chats.values()))
-        self.self_button.set_child(person_avatar(self.state.profile.get("id", "me"), self.state.profile.get("id", "me"), 30, 16))
+        unread = sum(int(chat.get("unread") or 0) for chat in self.state.chats.values() if not self.chat_muted(chat))
+        self.navdot.set_text("99+" if unread > 99 else str(unread))
+        self.navdot.set_visible(unread > 0)
+
+    def chat_muted(self, chat):
+        return bool(chat.get("muted")) or self.prefs.has("muted", chat.get("id"))
 
     def render_sidebar(self):
         friends = self.section == "friends"
-        self.side_title.set_text({"friends": "好友", "calls": "通話"}.get(self.section, "聊天"))
+        self.side_title.set_text("好友" if friends else "聊天")
         self.side_action.set_child(icon("plus" if friends else "edit", 18))
         self.side_action.set_tooltip_text("加入好友" if friends else "建立群組")
-        self.search.set_placeholder_text("搜尋好友姓名" if friends else "搜尋好友或聊天室")
+        self.search.set_placeholder_text("以姓名搜尋" if friends else "搜尋聊天和訊息")
         clear(self.filter_row)
-        unread = sum(1 for chat in self.state.chats.values() if chat.get("unread"))
-        options = [("all", "全部"), ("favorite", "我的最愛")] if friends else [("all", "全部"), ("unread", "未讀"), ("group", "群組")]
+        self.filter_row.set_visible(not friends)
+        options = [] if friends else [("all", "全部"), ("friends", "好友"), ("group", "群組"), ("unread", "未讀")]
         for value, title in options:
-            contents = box(H, 4)
-            contents.append(label(title))
-            if value == "unread":
-                contents.append(label(str(unread), "count"))
-            widget = button(contents, lambda value=value: self.set_filter(value), "filter")
+            widget = button(label(title), lambda value=value: self.set_filter(value), "filter")
             if value == self.filter:
                 widget.add_css_class("active")
             self.filter_row.append(widget)
@@ -637,13 +710,9 @@ class Application(Gtk.Application):
     def set_filter(self, value):
         self.filter = value
         self.render_sidebar()
-        if self.section == "friends":
-            self.render_alternate()
 
     def search_changed(self):
         self.render_list()
-        if self.section == "friends":
-            self.render_alternate()
 
     def side_button_clicked(self):
         if self.section == "friends":
@@ -669,6 +738,11 @@ class Application(Gtk.Application):
                 continue
             if self.filter == "group" and chat.get("kind") not in ("group", "room"):
                 continue
+            if self.filter == "friends" and (chat.get("kind") != "direct" or chat["id"] not in self.state.contacts):
+                continue
+            # LINE lists only conversations that contain messages.
+            if chat.get("has_messages") is False and not self.state.messages.get(chat["id"]) and chat["id"] != self.state.selected:
+                continue
             rows.append(chat)
         rows.sort(key=lambda chat: (chat["id"] == KEEP_ID, -int(chat.get("updated_at", 0) or 0)))
         return rows
@@ -676,26 +750,50 @@ class Application(Gtk.Application):
     def render_list(self):
         clear(self.chat_list)
         if self.section == "friends":
-            rows = self.visible_friends()
-            self.chat_list.append(self.list_label("好友", len(rows)))
-            for contact in rows:
-                self.chat_list.append(self.friend_row(contact))
-            if not rows:
-                self.chat_list.append(label("沒有符合的好友\n試試其他搜尋關鍵字。", "empty", xalign=0.5))
+            self.render_friend_list()
             return
         rows = self.visible_chats()
-        pinned = [chat for chat in rows if self.prefs.has("pinned", chat["id"])]
-        others = [chat for chat in rows if not self.prefs.has("pinned", chat["id"])]
-        if pinned:
-            self.chat_list.append(self.list_label("置頂聊天", None, "pin"))
-            for chat in pinned:
-                self.chat_list.append(self.chat_row(chat))
-        if others:
-            self.chat_list.append(self.list_label("所有聊天", len(others), spaced=bool(pinned)))
-            for chat in others:
-                self.chat_list.append(self.chat_row(chat))
+        rows.sort(key=lambda chat: (not self.prefs.has("pinned", chat["id"]), chat["id"] == KEEP_ID, -int(chat.get("updated_at", 0) or 0)))
+        for chat in rows:
+            self.chat_list.append(self.chat_row(chat))
         if not rows:
-            self.chat_list.append(label("沒有找到聊天室\n試試其他關鍵字或篩選。", "empty", xalign=0.5))
+            self.chat_list.append(label("沒有聊天" if not self.search.get_text() else "找不到符合的聊天", "empty", xalign=0.5))
+
+    def render_friend_list(self):
+        query = self.search.get_text().casefold().strip()
+        own = self.state.profile
+        if not query and own:
+            self.chat_list.append(self.friend_row(own, profile=True))
+        friends = self.visible_friends()
+        favorites = [c for c in friends if self.prefs.has("favorites", c["id"])]
+        groups = [c for c in self.state.chats.values() if c.get("kind") in ("group", "room") and query in str(c.get("name", "")).casefold()]
+        groups.sort(key=lambda c: str(c.get("name", "")))
+        for key, title, rows, builder in (("favorites", "我的最愛", favorites, self.friend_row),
+                                          ("groups", "群組", groups, self.group_row),
+                                          ("friends", "好友", friends, self.friend_row)):
+            if not rows:
+                continue
+            collapsed = key in self.collapsed and not query
+            self.chat_list.append(self.section_header(key, title, len(rows), collapsed))
+            if not collapsed:
+                for row in rows:
+                    self.chat_list.append(builder(row))
+        if not friends and not groups:
+            self.chat_list.append(label("找不到符合的好友" if query else "還沒有好友", "empty", xalign=0.5))
+
+    def section_header(self, key, title, count, collapsed):
+        contents = box(H, 6)
+        name = label(f"{title} {count}")
+        name.set_hexpand(True)
+        contents.append(name)
+        chevron = icon("chevron", 12)
+        chevron.add_css_class("collapsed" if collapsed else "expanded")
+        contents.append(chevron)
+        return button(contents, lambda: self.toggle_section(key), "list-label", f"{title}，{count} 個")
+
+    def toggle_section(self, key):
+        self.collapsed ^= {key}
+        self.render_list()
 
     def list_label(self, text, count=None, glyph=None, spaced=False):
         row = box(H, 6, "list-label" + (" spaced" if spaced else ""))
@@ -712,24 +810,30 @@ class Application(Gtk.Application):
 
     def chat_row(self, chat):
         contents = box(H, 12)
-        contents.append(chat_avatar(chat, self.state.profile.get("id", ""), 43, 16))
-        info = box(V, 0, valign=CENTER, hexpand=True)
+        contents.append(chat_avatar(chat, self.state.profile.get("id", ""), 48))
+        info = box(V, 4, valign=CENTER, hexpand=True)
         info.set_size_request(80, -1)
-        head = box(H, 7)
-        head.set_margin_bottom(7)
-        name = label(chat.get("name", "未命名對話"), "chat-name", ellipsize=True)
-        name.set_hexpand(True)
+        head = box(H, 4)
+        title = chat.get("name", "未命名對話")
+        if chat.get("kind") in ("group", "room"):
+            title += f" ({self.member_count(chat)})"
+        name = label(title, "chat-name", ellipsize=True)
         head.append(name)
+        if self.chat_muted(chat):
+            head.append(icon("belloff", 12, "muted-icon"))
+        if self.prefs.has("pinned", chat["id"]):
+            head.append(icon("pin", 12, "muted-icon"))
+        spacer = box(hexpand=True)
+        head.append(spacer)
         head.append(label(list_time(chat.get("updated_at", 0)), "chat-time"))
         info.append(head)
         bottom = box(H, 6)
-        preview = label(str(chat.get("last_message") or "開始你們的第一段對話").replace("\n", " "), "chat-preview", ellipsize=True)
+        preview = label(str(chat.get("last_message") or "").replace("\n", " "), "chat-preview", ellipsize=True)
         preview.set_hexpand(True)
         bottom.append(preview)
-        if self.prefs.has("muted", chat["id"]):
-            bottom.append(icon("belloff", 11, "muted-icon"))
         if chat.get("unread"):
-            badge = label(str(chat["unread"]), "unread", xalign=0.5)
+            count = int(chat["unread"])
+            badge = label("999+" if count > 999 else str(count), "unread" + (" muted" if self.chat_muted(chat) else ""), xalign=0.5)
             badge.set_valign(CENTER)
             bottom.append(badge)
         info.append(bottom)
@@ -739,26 +843,117 @@ class Application(Gtk.Application):
         row.set_tooltip_text(None)
         if chat["id"] == self.state.selected and self.section != "friends":
             row.add_css_class("active")
+        if chat["id"] != KEEP_ID:
+            self.attach_context(row, lambda: self.chat_menu(chat))
         return row
 
-    def friend_row(self, contact):
+    def chat_menu(self, chat):
+        pinned = self.prefs.has("pinned", chat["id"])
+        muted = self.chat_muted(chat)
+        options = [("pin", "取消置頂" if pinned else "置頂", lambda: self.toggle_pref("pinned", chat)),
+                   ("bell" if muted else "belloff", "開啟通知" if muted else "關閉通知", lambda: self.toggle_pref("muted", chat))]
+        if chat.get("unread"):
+            options.append(("check", "標為已讀", lambda: self.read_chat(chat)))
+        if self.state.capabilities.get("chat_delete", True):
+            options.append(("trash", "刪除聊天", lambda: self.confirm_delete_chat(chat)))
+        return options
+
+    def read_chat(self, chat):
+        """Explicit 「標為已讀」 from the list menu sends the read receipt."""
+        history = self.state.messages.get(chat["id"]) or []
+        chat["unread"] = 0
+        if self.core and chat["id"] != KEEP_ID and history:
+            self.core.request("messages.read", {"chat_id": chat["id"], "message_id": history[-1]["id"]})
+        self.render_list()
+        self.render_rail()
+
+    def confirm_delete_chat(self, chat):
+        body = label("刪除後，這個聊天室的所有訊息將從這台電腦和你的帳號中移除，對方的紀錄不受影響。", "subtle", wrap=True)
+
+        def delete():
+            self.close_modal()
+            if not self.core:
+                return
+            def done(response):
+                if not response.get("ok"):
+                    self.toast(self.error(response), True)
+                    return
+                self.state.messages.pop(chat["id"], None)
+                self.state.chats.pop(chat["id"], None)
+                if self.state.selected == chat["id"]:
+                    self.state.selected = None
+                    self.main_stack.set_visible_child_name("empty")
+                self.render_list()
+                self.render_rail()
+            self.core.request("chats.delete", {"chat_id": chat["id"]}, done)
+        self.open_modal("delete-chat", "刪除聊天", body, self.modal_actions(delete, "刪除"))
+
+    def friend_row(self, contact, profile=False):
         contents = box(H, 12)
-        contents.append(person_avatar(contact["id"], self.state.profile.get("id", ""), 43, 16))
-        info = box(V, 0, valign=CENTER, hexpand=True)
-        info.set_size_request(80, -1)
-        head = box(H, 7)
-        head.set_margin_bottom(7)
-        head.append(label(contact.get("name", "好友"), "chat-name", ellipsize=True))
-        if self.prefs.has("favorites", contact["id"]):
-            star = icon("star", 12, "star")
-            star.set_valign(CENTER)
-            head.append(star)
-        info.append(head)
-        info.append(label(contact.get("status") or "　", "chat-preview", ellipsize=True))
+        contents.append(person_avatar(contact.get("id"), self.state.profile.get("id", ""), 52 if profile else 40))
+        info = box(V, 3, valign=CENTER, hexpand=True)
+        info.append(label(contact.get("name", "好友"), "chat-name" + (" profile" if profile else ""), ellipsize=True))
+        status = label(contact.get("status") or "", "chat-preview", ellipsize=True)
+        status.set_visible(bool(contact.get("status")))
+        info.append(status)
         contents.append(info)
-        row = button(contents, lambda value=contact["id"]: self.open_profile(value), "chat-row", contact.get("name", "好友"))
+        row = button(contents, None, "chat-row friend" + (" own-profile" if profile else ""), contact.get("name", "好友"))
         row.set_tooltip_text(None)
+        person_id = contact.get("id", "")
+        # LINE PC: one click shows the profile, a double click opens the chat.
+        click = Gtk.GestureClick(button=1)
+        click.connect("released", lambda gesture, n, x, y: self.open_direct(person_id) if n >= 2 and not profile else (self.open_profile(person_id) if n == 1 else None))
+        row.add_controller(click)
+        if not profile:
+            self.attach_context(row, lambda: self.friend_menu(contact))
         return row
+
+    def group_row(self, chat):
+        contents = box(H, 12)
+        contents.append(chat_avatar(chat, self.state.profile.get("id", ""), 40))
+        name = label(f"{chat.get('name', '群組')} ({self.member_count(chat)})", "chat-name", ellipsize=True)
+        name.set_valign(CENTER)
+        name.set_hexpand(True)
+        contents.append(name)
+        row = button(contents, None, "chat-row friend", chat.get("name", "群組"))
+        row.set_tooltip_text(None)
+        click = Gtk.GestureClick(button=1)
+        click.connect("released", lambda gesture, n, x, y: self.select_chat(chat["id"]) if n >= 1 else None)
+        row.add_controller(click)
+        return row
+
+    def friend_menu(self, contact):
+        favorite = self.prefs.has("favorites", contact["id"])
+        return [("chat", "聊天", lambda: self.open_direct(contact["id"])),
+                ("star", "從我的最愛中移除" if favorite else "加到我的最愛", lambda: self.toggle_favorite(contact["id"], reopen=False)),
+                ("info", "個人檔案", lambda: self.open_profile(contact["id"]))]
+
+    def attach_context(self, widget, options):
+        """Right click (or long press on touch) shows a LINE-style menu."""
+        def show(x, y):
+            entries = options()
+            if not entries:
+                return
+            popover = Gtk.Popover(has_arrow=False)
+            popover.add_css_class("line-popover")
+            contents = box(V, 0)
+            for glyph, title, callback in entries:
+                contents.append(button(icon_text(glyph, title, 14, 9), lambda action=callback: (popover.popdown(), action()), "danger" if glyph == "trash" else None))
+            popover.set_child(contents)
+            popover.set_parent(widget)
+            rect = Gdk.Rectangle()
+            rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
+            popover.set_pointing_to(rect)
+            popover.set_position(Gtk.PositionType.BOTTOM)
+            popover.connect("closed", lambda *_: GLib.idle_add(lambda: popover.unparent() if popover.get_parent() else None))
+            self.context_popover = popover
+            popover.popup()
+        click = Gtk.GestureClick(button=3)
+        click.connect("pressed", lambda gesture, n, x, y: show(x, y))
+        widget.add_controller(click)
+        press = Gtk.GestureLongPress(touch_only=True)
+        press.connect("pressed", lambda gesture, x, y: show(x, y))
+        widget.add_controller(press)
 
     # --------------------------------------------------------------- chat view
     def select_chat(self, chat_id):
@@ -766,12 +961,17 @@ class Application(Gtk.Application):
             return
         if chat_id not in self.state.chats:
             return
-        self.section = "chats"
+        # Opening a chat from the friends page keeps the friends list, as LINE does.
+        if self.section != "friends" or chat_id == KEEP_ID:
+            self.section = "chats"
         self.state.selected = chat_id
         chat = self.state.chats[chat_id]
         chat["unread"] = 0
         self.detail_tab = "info"
         self.close_search()
+        if getattr(self, "tray", None) is not None:
+            self.clear_tray()
+            self.cancel_reply()
         self.main_stack.set_visible_child_name("chat")
         self.compose.get_buffer().set_text(self.state.drafts.get(chat_id, ""))
         self.render_rail()
@@ -827,26 +1027,15 @@ class Application(Gtk.Application):
     def render_header(self):
         chat = self.current_chat()
         clear(self.header_avatar_slot)
-        self.header_avatar_slot.append(chat_avatar(chat, self.state.profile.get("id", ""), 40, 13))
+        self.header_avatar_slot.append(chat_avatar(chat, self.state.profile.get("id", ""), 36))
         self.chat_title.set_text(chat.get("name", "對話") if chat else "讓對話，從這裡開始。")
-        self.muted_tag.set_visible(bool(chat and self.prefs.has("muted", chat["id"])))
-        if not chat:
-            subtitle = "選擇左側聊天或好友"
-        elif chat["id"] == KEEP_ID:
-            subtitle = "只屬於你的私人記事空間"
-        elif chat.get("kind") in ("group", "room"):
-            subtitle = f"{self.member_count(chat)} 位成員 · 生活的小事，一起分享"
-        else:
-            subtitle = "你們的每一段日常"
-        self.chat_subtitle.set_text(subtitle)
+        if chat and chat.get("kind") in ("group", "room"):
+            self.chat_title.set_text(f"{chat.get('name', '群組')} ({self.member_count(chat)})")
+        self.muted_tag.set_visible(bool(chat and self.chat_muted(chat)))
+        self.chat_subtitle.set_text("")
+        self.subtitle_row.set_visible(False)
         for widget in self.call_buttons:
             widget.set_visible(not chat or chat["id"] != KEEP_ID)
-        hint = "Enter 傳送 · Shift + Enter 換行" if self.prefs.settings["enter_send"] else "Enter 換行 · 點擊箭頭傳送"
-        self.enter_hint.set_text(hint)
-        if chat and chat["id"] == KEEP_ID:
-            self.composer_note.set_text("只保存在這台電腦")
-        else:
-            self.composer_note.set_text("離線展示 · 不會實際傳送" if self.state.mode == "demo" else "Letter Sealing 加密傳送")
 
     def history_for(self, chat_id):
         return self.state.messages.get(chat_id, [])
@@ -858,22 +1047,29 @@ class Application(Gtk.Application):
         query = self.message_search.casefold()
         matches = 0
         first_hit = None
+        by_id = {m.get("id"): m for m in history}
         if not history:
-            self.history.append(self.date_divider(day_label(int(time.time() * 1000))))
-            empty = label("第一句問候，讓故事開始。\n傳送訊息，分享你的今天。" if chat else "每一天，都有值得分享的小事。\n選擇左側對話，開始今天的問候。", "empty", xalign=0.5)
-            self.history.append(empty)
+            self.history.append(label("沒有訊息" if chat else "", "empty", xalign=0.5))
         day = None
+        previous = None
         for message in history:
             moment = day_label(message.get("time", 0))
             if moment != day:
                 day = moment
+                previous = None
                 self.history.append(self.date_divider(moment))
             hit = bool(query and query in str(message.get("text", "")).casefold())
             matches += hit
-            row, bubble = self.message_widget(message, chat, hit)
+            # LINE groups consecutive messages by one sender within a minute
+            # or so: only the first shows the avatar and name.
+            grouped = bool(previous and previous.get("kind") != "system" and message.get("kind") != "system"
+                           and previous.get("mine") == message.get("mine") and previous.get("sender_id") == message.get("sender_id")
+                           and abs(int(message.get("time", 0)) - int(previous.get("time", 0))) < 5 * 60 * 1000)
+            row, bubble = self.message_widget(message, chat, hit, grouped, by_id)
             if hit and first_hit is None:
                 first_hit = bubble
             self.history.append(row)
+            previous = message
         self.search_count.set_text(f"{matches} 則結果" if self.message_search else "")
         if first_hit is not None:
             GLib.idle_add(self.scroll_to, first_hit)
@@ -885,108 +1081,361 @@ class Application(Gtk.Application):
         pill.set_halign(CENTER)
         return pill
 
-    def message_widget(self, message, chat, highlighted=False):
+    def read_label(self, message, chat):
+        """已讀 for a direct chat, 已讀 N for groups (op 55 receipts)."""
+        if not chat or chat["id"] == KEEP_ID or message.get("status") in ("pending", "failed"):
+            return ""
+        readers = chat.get("read_by") or {}
+        stamp = int(message.get("time", 0))
+        count = sum(1 for reader, at in readers.items() if reader != self.state.profile.get("id") and int(at or 0) >= stamp)
+        if not count:
+            return ""
+        return "已讀" if chat.get("kind") == "direct" else f"已讀 {count}"
+
+    def message_widget(self, message, chat, highlighted=False, grouped=False, by_id=None):
         own = bool(message.get("mine"))
         kind = message.get("kind") or "text"
-        if kind == "system":
-            notice = label(message.get("text") or "系統訊息", "bubble system", wrap=True, xalign=0.5, max_chars=self.bubble_chars)
+        if kind == "system" or message.get("unsent"):
+            text = message.get("text") or "系統訊息"
+            if message.get("unsent"):
+                who = "你" if own else (message.get("sender_name") or self.state.name_of(message.get("sender_id")))
+                text = f"{who}已收回訊息"
+            notice = label(text, "system-notice", wrap=True, xalign=0.5, max_chars=self.bubble_chars)
             notice.set_halign(CENTER)
-            wrapper = box(V, 0, "message")
+            wrapper = box(V, 0, "message system")
             wrapper.append(notice)
             return wrapper, notice
-        row = box(H, 9, "message" + (" own" if own else ""), halign=END if own else START)
+        row = box(H, 8, "message" + (" own" if own else "") + (" grouped" if grouped else ""), halign=END if own else START)
         if not own:
-            row.append(person_avatar(message.get("sender_id") or message.get("sender_name"), self.state.profile.get("id", ""), 28, 10))
+            if grouped:
+                spacer = box()
+                spacer.set_size_request(36, -1)
+                row.append(spacer)
+            else:
+                face = person_avatar(message.get("sender_id"), self.state.profile.get("id", ""), 36)
+                face_button = button(face, lambda value=message.get("sender_id"): self.open_profile(value), "avatar-button", "個人檔案")
+                face_button.set_valign(START)
+                row.append(face_button)
         main = box(V, 0)
-        if not own:
+        if not own and not grouped and chat and chat.get("kind") in ("group", "room"):
             main.append(label(message.get("sender_name") or self.state.name_of(message.get("sender_id")), "message-sender"))
-        line = box(H, 7)
-        bubble = self.bubble(message, kind)
+        line = box(H, 6)
+        bubble = self.bubble(message, kind, by_id or {})
         if highlighted:
             bubble.add_css_class("search-highlight")
+        if not grouped and kind == "text":
+            bubble.add_css_class("tail")
         meta = box(V, 0, "message-meta", valign=END)
         if own and chat and chat["id"] != KEEP_ID:
             status = message.get("status")
-            text, css = {"pending": ("傳送中…", "read"), "failed": ("傳送失敗", "failed")}.get(status, ("已傳送", "read"))
-            meta.append(label(text, css, xalign=1))
+            if status == "pending":
+                meta.append(label("傳送中", "read", xalign=1))
+            elif status == "failed":
+                meta.append(label("傳送失敗", "failed", xalign=1))
+            else:
+                read = self.read_label(message, chat)
+                if read:
+                    meta.append(label(read, "read", xalign=1))
         meta.append(label(clock(message.get("time", 0)), xalign=1 if own else 0))
-        actions = self.message_actions(message, chat)
-        parts = [bubble, meta] + ([actions] if actions else [])
+        parts = [bubble, meta]
         for widget in (reversed(parts) if own else parts):
             line.append(widget)
         main.append(line)
         row.append(main)
+        self.attach_context(bubble, lambda item=message: self.message_menu(item, chat))
         return row, bubble
 
-    def bubble(self, message, kind):
+    def emoji_text(self, message):
+        """Builds a TextView-free paragraph with LINE emoji (sticons) inline.
+        Text with no emoji stays a selectable label."""
+        text = str(message.get("text") or "")
+        runs = message.get("emoji") or []
+        if not runs:
+            return None
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=False, column_spacing=0, row_spacing=0, max_children_per_line=40)
+        flow.set_valign(START)
+        chars = list(text)
+        cursor = 0
+        only_emoji = all(ch in "\ufffc \n" for ch in text)
+        size = 44 if only_emoji and len(runs) <= 3 else 20
+        for run in sorted(runs, key=lambda r: r.get("start", 0)):
+            start, end = int(run.get("start", 0)), int(run.get("end", 0))
+            if start > cursor:
+                for word in "".join(chars[cursor:start]).split("\n"):
+                    if word:
+                        flow.insert(label(word, "emoji-text"), -1)
+            flow.insert(self.sticker_picture(run.get("url", ""), size, size), -1)
+            cursor = max(cursor, end)
+        if cursor < len(chars):
+            rest = "".join(chars[cursor:])
+            if rest.strip():
+                flow.insert(label(rest, "emoji-text"), -1)
+        return flow, only_emoji
+
+    def reply_quote(self, message, by_id):
+        target = by_id.get(message.get("reply_to"))
+        quote = box(V, 2, "reply-quote")
+        if target:
+            name = "你" if target.get("mine") else (target.get("sender_name") or self.state.name_of(target.get("sender_id")))
+            quote.append(label(name, "reply-name", ellipsize=True))
+            quote.append(label(self.summary(target), "reply-body", ellipsize=True, max_chars=30))
+        else:
+            quote.append(label("回覆的訊息", "reply-body"))
+        return quote
+
+    def bubble(self, message, kind, by_id=None):
         own = bool(message.get("mine"))
         url = str(message.get("url") or "")
         if kind == "sticker":
             holder = box(V, 0, "bubble sticker-bubble")
             if url.startswith("demo:bear-"):
-                holder.append(Art("bear", url.rsplit("-", 1)[-1], 120, 108))
+                holder.append(Art("bear", url.rsplit("-", 1)[-1], 130, 117))
             else:
-                holder.append(self.sticker_picture(url, 120, 108))
+                holder.append(self.sticker_picture(url, 130, 130))
             return holder
-        if kind == "image" and url == "demo:collage":
-            holder = box(V, 0, "bubble image-bubble")
-            holder.set_overflow(Gtk.Overflow.HIDDEN)
-            holder.set_size_request(282, -1)
-            grid = box(H, 3)
-            grid.append(Art("scene", "mountain", 163, 150))
-            side = box(V, 3)
-            side.append(Art("scene", "trail", 116, 74))
-            side.append(Art("scene", "coffee", 116, 73))
-            grid.append(side)
-            holder.append(grid)
-            holder.append(label(message.get("text") or "", "image-caption", wrap=True))
-            click = Gtk.GestureClick()
-            click.connect("released", lambda *_: self.open_lightbox(0))
-            holder.add_controller(click)
-            holder.set_cursor_from_name("zoom-in")
-            return holder
+        if kind == "image":
+            return self.image_bubble(message)
         if kind == "file":
-            holder = box(V, 0, "bubble")
+            holder = box(V, 0, "bubble file-bubble")
             attachment = box(H, 11, "attachment")
             attachment.set_size_request(215, -1)
             attachment.append(file_badge(message.get("filename")))
             names = box(V, 0, valign=CENTER, hexpand=True)
             names.append(label(message.get("filename") or "檔案", "file-name", wrap=True, max_chars=26))
-            names.append(label(file_size(message.get("size")) + (" · 示範檔案" if self.state.mode == "demo" else ""), "file-size"))
+            names.append(label(file_size(message.get("size")), "file-size"))
             attachment.append(names)
-            download = icon_button("download", lambda item=message: self.download_file(item), "另存檔案", 15)
+            download = icon_button("download", lambda item=message: self.download_file(item), "另存新檔", 15)
             download.set_valign(CENTER)
             attachment.append(download)
             holder.append(attachment)
             return holder
+        holder = box(V, 4, "bubble")
+        holder.set_halign(END if own else START)
+        if message.get("reply_to"):
+            holder.append(self.reply_quote(message, by_id or {}))
+        built = self.emoji_text(message) if kind == "text" else None
+        if built:
+            flow, only_emoji = built
+            if only_emoji and not message.get("reply_to"):
+                holder.add_css_class("sticker-bubble")
+            holder.append(flow)
+            return holder
         text = message.get("text") or media_label(message)
-        if kind == "image":
-            text = "[照片] 此版本尚無法預覽照片"
-        widget = label(text, "bubble", wrap=True, max_chars=self.bubble_chars, selectable=True)
-        widget.set_halign(END if own else START)
-        return widget
+        body = label(text, "bubble-text", wrap=True, max_chars=self.bubble_chars, selectable=True)
+        holder.append(body)
+        return holder
 
-    def message_actions(self, message, chat):
-        options = self.menu_options(message, chat)
-        if not options:
-            return None
-        widget = icon_button("more", None, "訊息操作", 15, "message-actions")
-        widget.set_valign(CENTER)
-        widget.connect("clicked", lambda source, item=message: self.show_menu(source, item))
-        return widget
+    def image_bubble(self, message):
+        """Photo thumbnail sized from MEDIA_THUMB_INFO, loaded lazily through
+        images.fetch (the core downloads and decrypts)."""
+        width, height = int(message.get("width") or 0), int(message.get("height") or 0)
+        if width <= 0 or height <= 0:
+            width, height = 240, 180
+        scale = min(240 / width, 240 / height, 1.0)
+        width, height = max(80, int(width * scale)), max(60, int(height * scale))
+        holder = box(V, 0, "bubble image-bubble")
+        holder.set_overflow(Gtk.Overflow.HIDDEN)
+        url = str(message.get("url") or "")
+        if url == "demo:collage":
+            grid = box(H, 2)
+            grid.append(Art("scene", "mountain", 140, 180))
+            side = box(V, 2)
+            side.append(Art("scene", "trail", 98, 89))
+            side.append(Art("scene", "coffee", 98, 89))
+            grid.append(side)
+            holder.append(grid)
+        else:
+            picture = Gtk.Picture()
+            picture.set_size_request(width, height)
+            picture.set_can_shrink(True)
+            try:
+                picture.set_content_fit(Gtk.ContentFit.COVER)
+            except AttributeError:
+                pass
+            holder.append(picture)
+            self.load_image(message, picture, preview=True)
+        click = Gtk.GestureClick(button=1)
+        click.connect("released", lambda *_: self.open_viewer(message))
+        holder.add_controller(click)
+        holder.set_cursor_from_name("pointer")
+        return holder
 
-    def menu_options(self, message, chat):
+    def load_image(self, message, picture, preview=False, done=None):
+        url = str(message.get("url") or "")
+        if url.startswith("file://"):
+            texture = None
+            try:
+                texture = Gdk.Texture.new_from_filename(url[7:])
+            except GLib.Error:
+                pass
+            if texture:
+                picture.set_paintable(texture)
+                if done:
+                    done(texture)
+            return
+        key = (message.get("id"), preview)
+        cached = self.image_textures.get(key) or self.image_textures.get((message.get("id"), False))
+        if cached:
+            picture.set_paintable(cached)
+            if done:
+                done(cached)
+            return
+        if not self.core or str(message.get("id", "")).startswith("pending-"):
+            return
+
+        def fetched(response):
+            if not response.get("ok"):
+                return
+            try:
+                data = base64.b64decode(response["result"]["data"])
+                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            except (KeyError, ValueError, GLib.Error):
+                return
+            if len(self.image_textures) > 120:
+                self.image_textures.pop(next(iter(self.image_textures)))
+            self.image_textures[key] = texture
+            if not preview:
+                self.image_bytes[message.get("id")] = data
+            picture.set_paintable(texture)
+            if done:
+                done(texture)
+        self.core.request("images.fetch", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message.get("id"), "preview": preview}, fetched)
+
+    def open_viewer(self, message):
+        """LINE PC opens photos in their own window with save/copy."""
+        if str(message.get("url") or "") == "demo:collage":
+            self.open_lightbox(0)
+            return
+        viewer = Gtk.Window(title="照片", transient_for=self.window)
+        viewer.set_default_size(820, 640)
+        viewer.add_css_class("photo-viewer")
+        layout = box(V, 0)
+        picture = Gtk.Picture()
+        picture.set_vexpand(True)
+        picture.set_can_shrink(True)
+        layout.append(picture)
+        bar = box(H, 6, "viewer-bar", halign=CENTER)
+        bar.append(button(icon_text("download", "儲存", 15), lambda: self.save_image(message, viewer), "viewer-btn"))
+        bar.append(button(icon_text("copy", "複製", 15), lambda: self.copy_image(message), "viewer-btn"))
+        bar.append(button(icon_text("forward", "分享", 15), lambda: (viewer.close(), self.open_forward(message)), "viewer-btn"))
+        layout.append(bar)
+        viewer.set_child(layout)
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", lambda c, keyval, *_: (viewer.close(), True)[1] if keyval == Gdk.KEY_Escape else False)
+        viewer.add_controller(key)
+        self.load_image(message, picture, preview=False)
+        viewer.present()
+
+    def image_data(self, message):
+        url = str(message.get("url") or "")
+        if url.startswith("file://"):
+            try:
+                return Path(url[7:]).read_bytes()
+            except OSError:
+                return None
+        return self.image_bytes.get(message.get("id"))
+
+    def copy_image(self, message):
+        texture = self.image_textures.get((message.get("id"), False)) or self.image_textures.get((message.get("id"), True))
+        if texture is None and str(message.get("url") or "").startswith("file://"):
+            try:
+                texture = Gdk.Texture.new_from_filename(message["url"][7:])
+            except GLib.Error:
+                texture = None
+        if texture is None:
+            self.toast("照片尚未載入完成。")
+            return
+        self.window.get_clipboard().set_texture(texture)
+        self.toast("已複製照片")
+
+    def save_image(self, message, parent=None):
+        def write(data):
+            dialog = Gtk.FileChooserNative.new("儲存照片", parent or self.window, Gtk.FileChooserAction.SAVE, "儲存", "取消")
+            stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(int(message.get("time", 0)) / 1000))
+            extension = "png" if data[:4] == b"\x89PNG" else ("gif" if data[:3] == b"GIF" else "jpg")
+            dialog.set_current_name(f"LINE_{stamp}.{extension}")
+            self.track_dialog(dialog)
+
+            def chosen(chooser, response):
+                if response == Gtk.ResponseType.ACCEPT and chooser.get_file():
+                    try:
+                        Path(chooser.get_file().get_path()).write_bytes(data)
+                        self.toast("照片已儲存")
+                    except OSError as error:
+                        self.toast(f"無法儲存：{error.strerror}", True)
+                chooser.destroy()
+            dialog.connect("response", chosen)
+            dialog.show()
+        data = self.image_data(message)
+        if data:
+            write(data)
+            return
+        holder = Gtk.Picture()
+        self.load_image(message, holder, preview=False, done=lambda texture: write(self.image_data(message) or bytes(texture.save_to_png_bytes().get_data())))
+
+    def message_menu(self, message, chat):
+        """Right-click / long-press menu (LINE PC order)."""
         options = []
-        if message.get("kind") in ("text", None) and message.get("text"):
-            options.append(("copy", "複製文字", lambda: self.copy_text(message.get("text", ""))))
-            options.append(("forward", "轉傳", lambda: self.open_forward(message)))
-        if message.get("kind") == "file":
-            options.append(("download", "另存檔案", lambda: self.download_file(message)))
+        kind = message.get("kind") or "text"
+        if message.get("unsent") or kind == "system":
+            return options
+        pending = str(message.get("id", "")).startswith("pending-")
+        if kind == "text" and message.get("text"):
+            options.append(("copy", "複製", lambda: self.copy_text(str(message.get("text", "")).replace("\ufffc", ""))))
+        if kind == "image":
+            options.append(("copy", "複製", lambda: self.copy_image(message)))
+            options.append(("download", "另存新檔", lambda: self.save_image(message)))
+        if kind == "file":
+            options.append(("download", "另存新檔", lambda: self.download_file(message)))
+        if chat and chat["id"] != KEEP_ID and not pending and self.state.capabilities.get("reply", True):
+            options.append(("reply", "回覆", lambda: self.start_reply(message)))
+        if not pending and kind in ("text", "image", "sticker"):
+            options.append(("forward", "分享", lambda: self.open_forward(message)))
+        if kind == "text" and chat and chat["id"] != KEEP_ID:
+            options.append(("bookmark", "儲存至 Keep", lambda: self.keep_message(message)))
+        if (message.get("mine") and chat and chat["id"] != KEEP_ID and not pending
+                and time.time() * 1000 - int(message.get("time", 0)) < 24 * 3600 * 1000):
+            options.append(("history", "收回", lambda: self.confirm_unsend(message)))
+        if chat and chat["id"] == KEEP_ID:
+            options.append(("trash", "刪除", lambda: self.delete_keep(message)))
         return options
 
+    def keep_message(self, message):
+        self.keep.add(str(message.get("text", "")).replace("\ufffc", ""))
+        self.state.chats.get(KEEP_ID, {}).update(self.keep.chat())
+        self.render_list()
+        self.toast("已儲存至 Keep")
+
+    def delete_keep(self, message):
+        try:
+            self.keep.remove(message.get("id"))
+        except OSError:
+            self.toast("無法刪除 Keep 筆記。", True)
+            return
+        self.state.chats.get(KEEP_ID, {}).update(self.keep.chat())
+        self.state.messages[KEEP_ID] = [m for m in self.state.messages.get(KEEP_ID, []) if m.get("id") != message.get("id")]
+        self.after_message(KEEP_ID)
+
+    def confirm_unsend(self, message):
+        body = label("收回後，所有人的聊天室都會顯示「已收回訊息」。", "subtle", wrap=True)
+
+        def unsend():
+            self.close_modal()
+            def done(response):
+                if not response.get("ok"):
+                    self.toast(self.error(response), True)
+                    return
+                message["unsent"] = True
+                self.after_message(message.get("chat_id") or self.state.selected)
+            self.core.request("messages.unsend", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message["id"]}, done)
+        self.open_modal("unsend", "要收回訊息嗎？", body, self.modal_actions(unsend, "收回"))
+
     def show_menu(self, source, message):
+        options = self.message_menu(message, self.current_chat())
+        if not options:
+            return
         contents = box(V, 0)
-        for glyph, title, callback in self.menu_options(message, self.current_chat()):
+        for glyph, title, callback in options:
             contents.append(button(icon_text(glyph, title, 14, 9), lambda action=callback: (self.menu.popdown(), action()), None))
         self.menu.set_child(contents)
         ok, bounds = source.compute_bounds(self.conversation)
@@ -995,14 +1444,11 @@ class Application(Gtk.Application):
             rect.x, rect.y = int(bounds.get_x()), int(bounds.get_y())
             rect.width, rect.height = int(bounds.get_width()), int(bounds.get_height())
             self.menu.set_pointing_to(rect)
-        source.add_css_class("open")
         self.popover_message = source
         self.menu.popup()
 
     def menu_closed(self):
-        if self.popover_message is not None:
-            self.popover_message.remove_css_class("open")
-            self.popover_message = None
+        self.popover_message = None
 
     def copy_text(self, text):
         self.window.get_clipboard().set(text)
@@ -1011,7 +1457,32 @@ class Application(Gtk.Application):
     def scroll_bottom(self):
         adjustment = self.history_scroll.get_vadjustment()
         adjustment.set_value(max(0, adjustment.get_upper() - adjustment.get_page_size()))
+        # Layout of new rows (pictures, wrapping) can grow the history after
+        # this idle; stick to the bottom until the next frame settles.
+        self.stick_bottom = True
         return GLib.SOURCE_REMOVE
+
+    def history_resized(self, adjustment):
+        # "changed" fires during size-allocate, where a new value is not
+        # applied to the viewport; snap on the next idle instead.
+        if self.stick_bottom and not self.snap_pending:
+            self.snap_pending = True
+            self.history_scroll.add_tick_callback(lambda *_: self.snap_bottom())
+
+    def snap_bottom(self):
+        self.snap_pending = False
+        if self.stick_bottom:
+            adjustment = self.history_scroll.get_vadjustment()
+            bottom = max(0, adjustment.get_upper() - adjustment.get_page_size())
+            # The value may already equal bottom while the viewport kept an
+            # allocation from before the resize; force a real value change.
+            adjustment.set_value(max(0, bottom - 1))
+            adjustment.set_value(bottom)
+        return GLib.SOURCE_REMOVE
+
+    def history_scrolled(self, adjustment):
+        bottom = adjustment.get_upper() - adjustment.get_page_size()
+        self.stick_bottom = adjustment.get_value() >= bottom - 40
 
     def scroll_to(self, widget):
         ok, bounds = widget.compute_bounds(self.history)
@@ -1057,13 +1528,29 @@ class Application(Gtk.Application):
 
     def update_send(self):
         draft = self.state.drafts.get(self.state.selected, "")
-        self.send_button.set_sensitive(bool(self.can_send_text() and draft.strip()))
+        ready = bool(self.can_send_text() and (draft.strip() or self.pending_images))
+        self.send_button.set_sensitive(ready)
+        self.send_button.set_visible(ready)
         self.compose.set_editable(bool(self.state.selected))
 
     def composer_key(self, controller, keyval, keycode, modifiers):
-        if keyval not in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) or not self.prefs.settings["enter_send"]:
+        if keyval in (Gdk.KEY_v, Gdk.KEY_V) and modifiers & Gdk.ModifierType.CONTROL_MASK and self.can_attach():
+            if self.paste_clipboard():
+                return True
+        if keyval == Gdk.KEY_Escape and self.replying:
+            self.cancel_reply()
+            return True
+        if keyval == Gdk.KEY_BackSpace and self.pending_images and not self.state.drafts.get(self.state.selected):
+            self.remove_image(len(self.pending_images) - 1)
+            return True
+        if keyval not in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             return False
         if modifiers & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK):
+            return False
+        # Enter sends (Shift+Enter breaks a line); with the option off, LINE
+        # sends with Alt+Enter and plain Enter breaks a line.
+        alt = bool(modifiers & Gdk.ModifierType.ALT_MASK)
+        if alt == self.prefs.settings["enter_send"]:
             return False
         event = controller.get_current_event()
         if event is not None and self.compose.im_context_filter_keypress(event):
@@ -1075,11 +1562,19 @@ class Application(Gtk.Application):
     def send_text(self):
         chat_id = self.state.selected
         text = self.state.drafts.get(chat_id, "")
-        if not self.send_button.get_sensitive() or not text.strip():
+        if not self.send_button.get_sensitive():
             return
-        self.deliver_text(chat_id, text, from_composer=True)
+        images = list(self.pending_images)
+        reply = (self.replying or {}).get("id", "")
+        if images and chat_id != KEEP_ID:
+            self.clear_tray()
+            self.send_images(chat_id, images)
+        if text.strip():
+            self.deliver_text(chat_id, text, from_composer=True, reply_to=reply)
+        self.cancel_reply()
+        self.update_send()
 
-    def deliver_text(self, chat_id, text, from_composer=False):
+    def deliver_text(self, chat_id, text, from_composer=False, reply_to=""):
         if chat_id == KEEP_ID:
             item = self.keep.add(text.strip())
             message = self.keep.messages()[-1]
@@ -1098,7 +1593,7 @@ class Application(Gtk.Application):
             return
         temporary = "pending-" + uuid.uuid4().hex
         generation = self.generation
-        message = {"id": temporary, "chat_id": chat_id, "text": text, "mine": True, "time": int(time.time() * 1000), "kind": "text", "status": "pending"}
+        message = {"id": temporary, "chat_id": chat_id, "text": text, "mine": True, "time": int(time.time() * 1000), "kind": "text", "status": "pending", "reply_to": reply_to}
         self.state.add_message(message)
         if from_composer:
             self.state.drafts[chat_id] = ""
@@ -1121,7 +1616,10 @@ class Application(Gtk.Application):
                         self.compose.get_buffer().set_text(self.state.drafts[chat_id])
                 self.toast(self.error(response), True)
             self.after_message(chat_id)
-        self.core.request("messages.send", {"chat_id": chat_id, "text": text}, sent)
+        params = {"chat_id": chat_id, "text": text}
+        if reply_to and not str(reply_to).startswith("pending-"):
+            params["reply_to"] = reply_to
+        self.core.request("messages.send", params, sent)
 
     def after_message(self, chat_id):
         if self.state.selected == chat_id and self.main_stack.get_visible_child_name() == "chat":
@@ -1141,8 +1639,8 @@ class Application(Gtk.Application):
         self.detail_tab = tab
         self.render_details()
 
-    def toggle_pref(self, key):
-        chat = self.current_chat()
+    def toggle_pref(self, key, chat=None):
+        chat = chat or self.current_chat()
         if not chat:
             return
         try:
@@ -1166,15 +1664,14 @@ class Application(Gtk.Application):
         portrait.set_halign(CENTER)
         profile.append(portrait)
         profile.append(label(chat.get("name", "你的對話空間") if chat else "你的對話空間", "detail-name", wrap=True, xalign=0.5))
-        if not chat:
-            caption = "好好聊天，慢慢靠近。"
-        elif chat["id"] == KEEP_ID:
-            caption = "隨手記下，每一個靈感"
+        if not chat or chat["id"] == KEEP_ID:
+            caption = ""
         elif chat.get("kind") in ("group", "room"):
-            caption = f"{self.member_count(chat)} 位成員 · 在一起的好時光"
+            caption = f"成員 {self.member_count(chat)}"
         else:
-            caption = (self.state.contacts.get(chat["id"]) or {}).get("status") or "你們的每一段日常"
-        profile.append(label(caption, "detail-caption", wrap=True, xalign=0.5))
+            caption = (self.state.contacts.get(chat["id"]) or {}).get("status") or ""
+        if caption:
+            profile.append(label(caption, "detail-caption", wrap=True, xalign=0.5))
         self.detail_contents.append(profile)
         quick = box(H, 26, "quick-actions", halign=CENTER)
         muted = bool(chat and self.prefs.has("muted", chat["id"]))
@@ -1355,45 +1852,6 @@ class Application(Gtk.Application):
         if not files:
             content.append(label("還沒有共享檔案\n從對話中傳送第一個檔案。", "empty", xalign=0.5))
 
-    # ----------------------------------------------------------- alternates
-    def render_alternate(self):
-        clear(self.alternate)
-        if self.section == "friends":
-            self.alternate.append(label("讓聯繫，更靠近。", "view-title"))
-            self.alternate.append(label("一句簡單的問候，就是一段好日常的開始。", "view-lead"))
-            grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, column_spacing=15, row_spacing=15, min_children_per_line=1, max_children_per_line=6)
-            grid.add_css_class("friend-grid")
-            grid.set_valign(START)
-            for contact in self.visible_friends():
-                card = box(H, 13, "friend-card")
-                card.set_size_request(210, -1)
-                card.append(person_avatar(contact["id"], self.state.profile.get("id", ""), 43, 16))
-                names = box(V, 0, valign=CENTER, hexpand=True)
-                names.append(label(contact.get("name", "好友"), "friend-name", ellipsize=True))
-                names.append(label(contact.get("status") or "　", "friend-status", ellipsize=True))
-                card.append(button(names, lambda value=contact["id"]: self.open_profile(value), None, contact.get("name")))
-                chat_button = icon_button("chat", lambda value=contact["id"]: self.open_direct(value), "傳送訊息", 18)
-                chat_button.set_valign(CENTER)
-                card.append(chat_button)
-                grid.insert(card, -1)
-            self.alternate.append(grid)
-            if not self.visible_friends():
-                self.alternate.append(label("沒有符合的好友\n試試其他搜尋關鍵字。", "empty", xalign=0.5))
-        else:
-            self.alternate.append(label("熟悉的聲音，一直都在。", "view-title"))
-            self.alternate.append(label("通話紀錄 · 此版本不提供語音與視訊通話。", "view-lead"))
-            empty = box(V, 0, "empty", halign=CENTER)
-            empty.set_margin_top(35)
-            glyph = icon("phone", 36)
-            glyph.set_halign(CENTER)
-            empty.append(glyph)
-            empty.append(label("還沒有通話紀錄\n收到的來電通知會顯示在聊天中。", xalign=0.5))
-            choose = button(None, lambda: self.navigate("friends"), "text-button", text="選擇好友")
-            choose.set_halign(CENTER)
-            choose.set_margin_top(15)
-            empty.append(choose)
-            self.alternate.append(empty)
-
     def open_direct(self, contact_id):
         chat_id = self.ensure_direct(contact_id)
         if chat_id:
@@ -1406,6 +1864,7 @@ class Application(Gtk.Application):
         layer = box(V, 0, "modal-overlay", hexpand=True, vexpand=True)
         card = box(V, 0, "modal " + css, halign=CENTER, valign=CENTER, vexpand=True)
         card.set_size_request(600 if wide else 460, -1)
+        card.set_overflow(Gtk.Overflow.HIDDEN)
         content = box(V, 0)
         head = box(H, 0, "modal-head")
         heading = label(title, "modal-title", wrap=True)
@@ -1467,13 +1926,97 @@ class Application(Gtk.Application):
             if self.search_bar.get_visible():
                 self.close_search()
                 return True
-        if keyval in (Gdk.KEY_r, Gdk.KEY_R) and modifiers & Gdk.ModifierType.CONTROL_MASK:
+        control = bool(modifiers & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(modifiers & Gdk.ModifierType.SHIFT_MASK)
+        if keyval in (Gdk.KEY_r, Gdk.KEY_R) and control:
             self.refresh()
             return True
+        if control and not self.modal and self.pages.get_visible_child_name() == "workspace":
+            # LINE PC shortcuts: Ctrl+1 好友, Ctrl+2 聊天, Ctrl+3 加入好友.
+            sections = {Gdk.KEY_1: "friends", Gdk.KEY_2: "chats", Gdk.KEY_3: "add",
+                        Gdk.KEY_KP_1: "friends", Gdk.KEY_KP_2: "chats", Gdk.KEY_KP_3: "add"}
+            if keyval in sections:
+                self.navigate(sections[keyval])
+                return True
+            if keyval in (Gdk.KEY_f, Gdk.KEY_F) and shift:
+                self.search.grab_focus()
+                return True
+            if keyval in (Gdk.KEY_f, Gdk.KEY_F) and self.current_chat() and self.main_stack.get_visible_child_name() == "chat":
+                self.open_search()
+                return True
+            if keyval in (Gdk.KEY_w, Gdk.KEY_W) and self.current_chat():
+                self.close_chat()
+                return True
+            if keyval in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+                self.cycle_chat(-1 if shift or keyval == Gdk.KEY_ISO_Left_Tab else 1)
+                return True
+            if keyval in (Gdk.KEY_s, Gdk.KEY_S) and shift and self.current_chat():
+                self.take_screenshot()
+                return True
         if self.modal_kind == "lightbox" and keyval in (Gdk.KEY_Left, Gdk.KEY_Right):
             self.open_lightbox(self.lightbox_index + (1 if keyval == Gdk.KEY_Right else -1))
             return True
         return False
+
+    # ----------------------------------------------------------------- theme
+    def watch_color_scheme(self):
+        """螢幕顯示模式 follows the desktop: read the portal's color-scheme
+        (1 = prefer dark) and listen for changes; fall back to GTK's own
+        prefer-dark setting outside a portal session."""
+        settings = Gtk.Settings.get_default()
+        if settings is not None:
+            self.system_dark = bool(settings.get_property("gtk-application-prefer-dark-theme")) or \
+                str(settings.get_property("gtk-theme-name") or "").lower().endswith("dark")
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            reply = bus.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                  "org.freedesktop.portal.Settings", "ReadOne",
+                                  GLib.Variant("(ss)", ("org.freedesktop.appearance", "color-scheme")),
+                                  GLib.VariantType.new("(v)"), Gio.DBusCallFlags.NONE, 500, None)
+            self.system_dark = self.unwrap_variant(reply.unpack()[0]) == 1
+            bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Settings", "SettingChanged",
+                                 "/org/freedesktop/portal/desktop", None, Gio.DBusSignalFlags.NONE, self.color_scheme_changed)
+        except GLib.Error:
+            pass
+
+    @staticmethod
+    def unwrap_variant(value):
+        while isinstance(value, GLib.Variant):
+            value = value.unpack()
+        return value
+
+    def color_scheme_changed(self, _bus, _sender, _path, _interface, _signal, parameters):
+        namespace, key, value = parameters.unpack()
+        if (namespace, key) == ("org.freedesktop.appearance", "color-scheme"):
+            self.system_dark = self.unwrap_variant(value) == 1
+            self.apply_theme()
+
+    def apply_theme(self):
+        mode = self.prefs.settings.get("theme", "system")
+        dark = self.system_dark if mode == "system" else mode == "dark"
+        self.window.add_css_class("dark") if dark else self.window.remove_css_class("dark")
+        settings = Gtk.Settings.get_default()
+        if settings is not None:
+            settings.set_property("gtk-application-prefer-dark-theme", dark)
+
+    def close_chat(self):
+        """Ctrl+W: close the open chat room (back to the blank pane)."""
+        self.close_search()
+        self.state.selected = None
+        self.main_stack.set_visible_child_name("empty")
+        self.render_list()
+
+    def cycle_chat(self, step):
+        """Ctrl+Tab / Ctrl+Shift+Tab: next or previous chat in list order."""
+        rows = self.visible_chats()
+        rows.sort(key=lambda chat: (not self.prefs.has("pinned", chat["id"]), chat["id"] == KEEP_ID, -int(chat.get("updated_at", 0) or 0)))
+        if not rows:
+            return
+        ids = [chat["id"] for chat in rows]
+        index = ids.index(self.state.selected) + step if self.state.selected in ids else (0 if step > 0 else -1)
+        if self.section != "chats":
+            self.navigate("chats")
+        self.select_chat(ids[index % len(ids)])
 
     def open_help(self):
         body = box(V, 0)
@@ -1482,9 +2025,9 @@ class Application(Gtk.Application):
             blocks.append(("這是一份離線展示", "所有訊息、好友與貼圖都是示範資料，不會連線至 LINE，也不會傳給其他人。重新啟動程式即重設；本機記事仍會保存在這台電腦。"))
         blocks += [
             ("非官方的 LINE Linux 用戶端", "以 GTK 4 原生元件重現 LINE 桌面版的聊天體驗，透過內建通訊核心直接連線 LINE，不需要瀏覽器。文字與檔案使用 Letter Sealing 加密傳送。"),
-            ("可以試試這些小事", "傳送訊息、貼圖和表情符號；拖入檔案並確認傳送；在聊天室資訊寫下記事；用 Keep 筆記記下自己的小靈感。懸停在訊息旁的「⋯」可複製或轉傳。按 Ctrl + R 重新整理聊天與好友。"),
+            ("快捷鍵", "Ctrl+1 好友 · Ctrl+2 聊天 · Ctrl+3 加入好友 · Ctrl+Tab／Ctrl+Shift+Tab 切換聊天室 · Ctrl+Shift+F 搜尋列表 · Ctrl+F 搜尋聊天室 · Ctrl+W 關閉聊天室 · Ctrl+Shift+S 擷取畫面 · Ctrl+V 貼上圖片 · Ctrl+R 重新整理 · Ctrl+Q 結束 LINE"),
             ("保存在哪裡", "登入憑證交給系統鑰匙圈保管，密碼不會儲存。記事、Keep 筆記與偏好設定只保存在這台電腦，不會同步到 LINE。"),
-            ("目前的限制", "此版本不提供語音與視訊通話、LINE 記事本與相簿、收回、回覆或回應訊息，也無法預覽照片。"),
+            ("目前的限制", "此版本不提供語音與視訊通話、加入好友、LINE 記事本與相簿、社群、編輯訊息與訊息回應，也無法載入更早的聊天記錄。"),
         ]
         for title, text in blocks:
             block = box(V, 0, "help-block")
@@ -1514,7 +2057,7 @@ class Application(Gtk.Application):
         name.set_can_focus(False)
         body.append(self.field("顯示名稱", name))
         switches = {}
-        for key, title in (("notifications", "訊息通知"), ("enter_send", "按 Enter 傳送訊息")):
+        for key, title in (("notifications", "訊息通知"), ("enter_send", "按 Enter 傳送訊息（關閉時改按 Alt+Enter）")):
             row = box(H, 0, "toggle-line")
             text = label(title)
             text.set_hexpand(True)
@@ -1530,6 +2073,11 @@ class Application(Gtk.Application):
         size_field = self.field("介面文字大小", size_choice)
         size_field.set_margin_top(20)
         body.append(size_field)
+        themes = [("system", "跟隨系統"), ("light", "淺色"), ("dark", "深色")]
+        theme_choice = Gtk.DropDown.new_from_strings([title for _, title in themes])
+        theme_choice.set_selected([value for value, _ in themes].index(self.prefs.settings.get("theme", "system")))
+        body.append(self.field("螢幕顯示模式", theme_choice))
+        self.theme_choice = theme_choice
         body.append(label("顯示名稱由 LINE 帳號提供。設定保存在這台電腦；訊息通知使用桌面系統通知。", "subtle", wrap=True))
         account = box(V, 0, "help-block last")
         account.set_margin_top(8)
@@ -1561,8 +2109,10 @@ class Application(Gtk.Application):
             try:
                 font = sizes[size_choice.get_selected()][0]
                 self.window.remove_css_class(f"font-{self.prefs.settings['font_size']}")
-                self.prefs.save_settings(notifications=switches["notifications"].get_active(), enter_send=switches["enter_send"].get_active(), font_size=font)
+                self.prefs.save_settings(notifications=switches["notifications"].get_active(), enter_send=switches["enter_send"].get_active(), font_size=font,
+                                         theme=themes[theme_choice.get_selected()][0])
                 self.window.add_css_class(f"font-{font}")
+                self.apply_theme()
             except OSError:
                 self.toast("無法儲存設定。請確認資料目錄的權限。", True)
                 return
@@ -1570,47 +2120,73 @@ class Application(Gtk.Application):
             self.render_header()
             self.toast("設定已儲存")
         self.settings_save = save
-        self.open_modal("settings", "讓 LINE，更像你。", body, self.modal_actions(save, "儲存設定", "關閉"))
+        self.open_modal("settings", "設定", body, self.modal_actions(save, "儲存設定", "關閉"))
 
     def open_profile(self, person_id):
+        """LINE profile card: cover, large round photo, name, status message
+        and a row of round actions underneath."""
         own = self.state.profile.get("id", "")
         me = bool(person_id) and person_id == own
-        contact = self.state.profile if me else self.state.contacts.get(person_id)
+        contact = self.state.profile if me else (self.state.contacts.get(person_id) or self.state.people.get(person_id))
+        friend = me or person_id in self.state.contacts
         if not contact:
             if person_id in self.state.chats:
                 contact = {"id": person_id, "name": self.state.chats[person_id].get("name", "成員"), "status": ""}
             else:
                 self.toast("無法取得這位成員的個人檔案。")
                 return
-        card = box(V, 0)
-        portrait = person_avatar(person_id or "me", own or "me", 68, 23)
+        card = box(V, 0, "profile-card")
+        top = Gtk.Overlay()
+        base = box(V, 0)
+        base.append(box(V, 0, "profile-cover"))
+        base.append(box(V, 0, "profile-cover-gap"))
+        top.set_child(base)
+        portrait = person_avatar(person_id or "me", own or "me", 104)
         portrait.set_halign(CENTER)
-        portrait.set_margin_bottom(13)
-        card.append(portrait)
+        portrait.set_valign(Gtk.Align.END)
+        portrait.add_css_class("profile-photo")
+        top.add_overlay(portrait)
+        card.append(top)
         card.append(label(contact.get("name", "LINE"), "profile-name", xalign=0.5, wrap=True))
-        card.append(label(contact.get("status") or ("把日子過成喜歡的樣子。" if me else "　"), "profile-status", xalign=0.5, wrap=True))
-        if me:
-            actions = self.modal_actions(lambda: (self.close_modal(), self.open_settings()), "設定", None, center=True)
-        else:
-            favorite = self.prefs.has("favorites", person_id)
-            star = button(None, lambda: self.toggle_favorite(person_id), "text-button", text="★ 已加入我的最愛" if favorite else "☆ 加入我的最愛")
-            star.set_halign(CENTER)
-            card.append(star)
-            actions = box(H, 9, "modal-actions", halign=CENTER)
-            actions.append(button(icon_text("phone", "語音通話", 16), lambda: self.unsupported("此版本不提供語音通話。"), "secondary"))
-            actions.append(button(None, lambda: self.open_direct(person_id), "primary", text="傳送訊息"))
-        self.open_modal("profile", "個人檔案", card, actions)
+        status = contact.get("status") or ("" if not me else "把日子過成喜歡的樣子。")
+        if status:
+            card.append(label(status, "profile-status", xalign=0.5, wrap=True))
+        actions = box(H, 28, "profile-actions", halign=CENTER)
 
-    def toggle_favorite(self, person_id):
+        def action(name, text, callback):
+            item = box(V, 6)
+            circle = box(V, 0, "profile-action-icon", halign=CENTER)
+            circle.append(icon(name, 22))
+            item.append(circle)
+            item.append(label(text, "profile-action-label", xalign=0.5))
+            actions.append(button(item, callback, "profile-action", text))
+        if me:
+            action("chat", "Keep 筆記", lambda: (self.close_modal(), self.select_chat(KEEP_ID)))
+            action("settings", "設定", lambda: (self.close_modal(), self.open_settings()))
+        elif friend:
+            action("chat", "聊天", lambda: self.open_direct(person_id))
+            action("phone", "語音通話", lambda: self.unsupported("此版本不提供語音通話。"))
+            favorite = self.prefs.has("favorites", person_id)
+            action("star", "已加入最愛" if favorite else "加入最愛", lambda: self.toggle_favorite(person_id))
+        else:
+            notice = label("對方不在你的好友名單中。", "profile-status", xalign=0.5)
+            notice.set_margin_top(6)
+            card.append(notice)
+            action("rail-add", "加入好友", lambda: self.unsupported("此版本無法加入好友，請在手機 LINE 操作。"))
+        card.append(actions)
+        self.open_modal("profile", "", card, css="profile-modal")
+
+    def toggle_favorite(self, person_id, reopen=True):
         try:
-            self.prefs.toggle("favorites", person_id)
+            enabled = self.prefs.toggle("favorites", person_id)
         except OSError:
             self.toast("無法儲存偏好設定。請確認資料目錄的權限。", True)
             return
-        self.open_profile(person_id)
+        if reopen:
+            self.open_profile(person_id)
+        else:
+            self.toast("已加到我的最愛" if enabled else "已從我的最愛中移除")
         self.render_list()
-        if self.section == "friends":
-            self.render_alternate()
 
     def open_members(self, chat):
         body = box(V, 0)
@@ -1632,30 +2208,129 @@ class Application(Gtk.Application):
             body.append(label(f"另有 {self.member_count(chat) - len(members)} 位成員未列出。", "subtle", wrap=True))
         self.open_modal("members", f"{chat.get('name', '聊天室')}的成員", body)
 
+    def forward_targets(self):
+        """Recent chats first, then friends without a chat yet (LINE 分享)."""
+        own = self.state.profile.get("id", "")
+        seen, targets = set(), []
+        for chat in sorted(self.state.chats.values(), key=lambda item: -int(item.get("updated_at") or 0)):
+            if chat["id"] in seen or (chat["id"] != KEEP_ID and not chat.get("has_messages", True) and chat.get("kind") != "direct"):
+                continue
+            seen.add(chat["id"])
+            targets.append({"id": chat["id"], "name": chat.get("name", "對話"), "chat": chat})
+        for contact_id, contact in sorted(self.state.contacts.items(), key=lambda item: item[1].get("name", "")):
+            if contact_id in seen or contact_id == own:
+                continue
+            seen.add(contact_id)
+            targets.append({"id": contact_id, "name": contact.get("name", "好友"), "contact": True})
+        return targets
+
     def open_forward(self, message):
-        body = box(V, 0)
-        for chat in self.visible_chats():
-            if chat["id"] == self.state.selected:
+        kind = message.get("kind", "text")
+        if kind not in ("text", "image", "sticker"):
+            self.toast("這類訊息目前無法分享。")
+            return
+        selected = []
+        rows = []
+        body = box(V, 0, "forward")
+        search = Gtk.SearchEntry(placeholder_text="搜尋好友或聊天")
+        search.add_css_class("sidebar-search")
+        body.append(search)
+        chosen = label("", "forward-chosen", ellipsize=True)
+        chosen.set_visible(False)
+        body.append(chosen)
+        listing = box(V, 0)
+        scroll = scroller(listing)
+        scroll.set_size_request(-1, 340)
+        body.append(scroll)
+        actions = self.modal_actions(lambda: self.forward(message, [target for target in self.forward_targets() if target["id"] in selected]), "分享")
+        share = actions.get_last_child().get_last_child()
+        share.set_sensitive(False)
+
+        def refresh():
+            share.set_sensitive(bool(selected))
+            share.get_child().set_text(f"分享（{len(selected)}）" if selected else "分享")
+            names = [target["name"] for target in self.forward_targets() if target["id"] in selected]
+            chosen.set_text("、".join(names))
+            chosen.set_visible(bool(names))
+
+        def toggle(target_id, check):
+            if target_id in selected:
+                selected.remove(target_id)
+            elif len(selected) < 20:
+                selected.append(target_id)
+            check.set_active(target_id in selected)
+            refresh()
+
+        own = self.state.profile.get("id", "")
+        for target in self.forward_targets():
+            if target["id"] == KEEP_ID and kind != "text":
                 continue
             row = box(H, 12)
-            row.append(chat_avatar(chat, self.state.profile.get("id", ""), 43, 16))
-            name = label(chat.get("name", "對話"))
+            check = Gtk.CheckButton()
+            check.set_can_target(False)
+            check.set_valign(CENTER)
+            row.append(check)
+            picture = chat_avatar(target["chat"], own, 40, 15) if "chat" in target else person_avatar(target["id"], own, 40)
+            row.append(picture)
+            name = label(target["name"], ellipsize=True)
             name.set_hexpand(True)
             name.set_valign(CENTER)
             row.append(name)
-            chevron = icon("chevron", 15)
-            chevron.set_valign(CENTER)
-            row.append(chevron)
-            body.append(button(row, lambda target=chat: self.forward(message, target), "chat-row contact-choice"))
-        self.open_modal("forward", "把這則訊息，分享給…", body)
+            widget = button(row, None, "chat-row contact-choice")
+            widget.connect("clicked", lambda _w, value=target["id"], box_=check: toggle(value, box_))
+            widget.forward_id = target["id"]
+            widget.forward_name = target["name"].lower()
+            listing.append(widget)
+            rows.append(widget)
+        self.forward_rows = rows
+        self.forward_share = share
 
-    def forward(self, message, chat):
-        if chat["id"] != KEEP_ID and not self.can_send_text_to(chat["id"]):
+        def filtered(entry):
+            query = entry.get_text().strip().lower()
+            for widget in rows:
+                widget.set_visible(not query or query in widget.forward_name)
+        search.connect("search-changed", filtered)
+        self.open_modal("forward", "分享", body, actions)
+
+    def forward(self, message, targets):
+        if not targets:
+            return
+        if not all(target["id"] == KEEP_ID or self.can_send_text_to(target["id"]) for target in targets):
             self.toast("目前無法傳送訊息，請等待連線完成。", True)
             return
+        kind = message.get("kind", "text")
         self.close_modal()
-        self.deliver_text(chat["id"], message.get("text", ""))
-        self.toast(f"已轉傳到「{chat.get('name', '對話')}」")
+        for target in targets:
+            chat_id = self.ensure_direct(target["id"]) if target.get("contact") else target["id"]
+            if not chat_id:
+                continue
+            if kind == "text":
+                self.deliver_text(chat_id, message.get("text", ""))
+            elif kind == "sticker":
+                self.core.request("messages.sticker", {"chat_id": chat_id, "package_id": message.get("package_id", ""), "sticker_id": message.get("sticker_id", "")},
+                                  lambda result, cid=chat_id: self.toast(self.error(result), True) if not result.get("ok") else self.after_message(cid))
+            elif kind == "image":
+                self.forward_image(message, chat_id)
+        self.toast(f"已分享給 {len(targets)} 個聊天" if len(targets) > 1 else f"已分享給「{targets[0]['name']}」")
+
+    def forward_image(self, message, chat_id):
+        def send(data):
+            if not data:
+                self.toast("照片尚未載入完成。", True)
+                return
+            path = self.temp_image_path("forward")
+            path.write_bytes(data)
+            self.send_images(chat_id, [str(path)])
+        if str(message.get("url") or "") == "demo:collage":
+            # Offline demo photo: share the illustrated scene itself.
+            send(bytes(art.texture("scene", "mountain", 640, 480, "").save_to_png_bytes().get_data()))
+            return
+        data = self.image_data(message)
+        if data:
+            send(data)
+            return
+        holder = Gtk.Picture()
+        self.load_image(message, holder, preview=False, done=lambda texture: send(self.image_data(message) or bytes(texture.save_to_png_bytes().get_data())))
 
     def can_send_text_to(self, chat_id):
         return chat_id == KEEP_ID or bool(self.state.session == "ready" and self.state.capabilities.get("text"))
@@ -1755,11 +2430,12 @@ class Application(Gtk.Application):
 
     # ------------------------------------------------------------- stickers
     def open_stickers(self):
+        """LINE's sticker panel: a popover above the composer, one click sends."""
         chat = self.current_chat()
         if not chat:
             return
         if chat["id"] == KEEP_ID:
-            self.open_sticker_modal([], KEEP_ID, self.generation, emoji_only=True)
+            self.show_sticker_panel([], KEEP_ID, self.generation, emoji_only=True)
             return
         if not self.core or self.state.session != "ready":
             return
@@ -1772,118 +2448,107 @@ class Application(Gtk.Application):
             if not response.get("ok"):
                 self.toast(self.error(response), True)
                 return
-            self.open_sticker_modal(response.get("result", {}).get("packs", []), chat_id, generation)
+            self.show_sticker_panel(response.get("result", {}).get("packs", []), chat_id, generation)
         self.core.request("stickers.list", callback=loaded)
 
-    def open_sticker_modal(self, packs, chat_id, generation, emoji_only=False):
-        def first(index):
-            stickers = packs[index].get("stickers", []) if isinstance(index, int) else []
-            return (packs[index], stickers[0]) if stickers else None
-        state = {"tab": "emoji" if emoji_only or not packs else 0, "page": 0}
-        state["selected"] = first(state["tab"])
-        body = box(V, 0)
-        tabs = box(H, 8, "sticker-tabs")
-        tab_scroll = Gtk.ScrolledWindow()
-        tab_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        tab_scroll.set_child(tabs)
-        body.append(tab_scroll)
-        content = box(V, 0)
-        body.append(content)
-        footer = box(V, 0)
-        self.sticker_choices = []
+    def sticker_tile_picture(self, sticker, size):
+        url = str(sticker.get("url", ""))
+        if url.startswith("demo:bear-"):
+            return Art("bear", url.rsplit("-", 1)[-1], size, size)
+        return self.sticker_picture(url, size, size)
 
-        def send():
-            item = state["selected"]
-            if not item or generation != self.generation or self.state.session != "ready":
+    def remember_sticker(self, package_id, sticker):
+        entry = {"package_id": str(package_id), "id": str(sticker.get("id", "")), "url": str(sticker.get("url", ""))}
+        recent = [item for item in self.recent_stickers if (item["package_id"], item["id"]) != (entry["package_id"], entry["id"])]
+        self.recent_stickers = [entry] + recent[:23]
+        if self.prefs.persist:
+            self.prefs.save_settings(recent_stickers=self.recent_stickers)
+
+    def show_sticker_panel(self, packs, chat_id, generation, emoji_only=False):
+        popover = self.sticker_popover
+        packs = [pack for pack in packs if pack.get("stickers")]
+        start = "emoji" if emoji_only or not packs else ("recent" if self.recent_stickers else 0)
+        state = {"kind": "emoji" if start == "emoji" else "sticker", "tab": start if start != "emoji" else (0 if packs else None)}
+        self.sticker_choices = []
+        last = {"key": None, "time": 0.0}
+        panel = box(V, 0, "sticker-panel")
+        heading = box(H, 0, "sticker-heading")
+        panel.append(heading)
+        content = scroller(box(V, 0))
+        content.set_size_request(372, 300)
+        panel.append(content)
+        strip = box(H, 2, "sticker-strip")
+        strip_scroll = Gtk.ScrolledWindow()
+        strip_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        strip_scroll.set_child(strip)
+        panel.append(strip_scroll)
+
+        def send(package_id, sticker):
+            key = (package_id, sticker.get("id"))
+            now = time.monotonic()
+            # A double click is two "clicked" signals; it must not send twice.
+            if last["key"] == key and now - last["time"] < 0.6:
                 return
-            pack, sticker = item
-            self.core.request("messages.sticker", {"chat_id": chat_id, "package_id": sticker.get("package_id") or pack["id"], "sticker_id": sticker["id"]},
+            last.update(key=key, time=now)
+            if generation != self.generation or self.state.session != "ready" or not self.core:
+                return
+            self.core.request("messages.sticker", {"chat_id": chat_id, "package_id": package_id, "sticker_id": sticker["id"]},
                               lambda result: self.toast(self.error(result), True) if not result.get("ok") else self.after_message(chat_id))
-            self.close_modal()
+            self.remember_sticker(package_id, sticker)
+
+        def tile(package_id, sticker):
+            widget = button(self.sticker_tile_picture(sticker, 76), lambda: send(package_id, sticker), "sticker-tile", "傳送貼圖")
+            self.sticker_choices.append(widget)
+            return widget
 
         def render():
-            clear(tabs)
-            clear(content)
-            clear(footer)
+            clear(heading)
+            clear(strip)
             self.sticker_choices = []
-            for index, pack in enumerate(packs):
-                widget = button(None, lambda value=index: choose_tab(value), "filter" + (" active" if state["tab"] == index else ""), text=pack.get("name", "貼圖"))
-                tabs.append(widget)
-            tabs.append(button(None, lambda: choose_tab("emoji"), "filter" + (" active" if state["tab"] == "emoji" else ""), text="表情符號"))
-            if state["tab"] == "emoji":
-                grid = Gtk.Grid(column_spacing=8, row_spacing=8, column_homogeneous=True)
-                for index, glyph in enumerate(EMOJI):
-                    grid.attach(button(None, lambda value=glyph: self.insert_emoji(value), "emoji", f"插入 {glyph}", text=glyph), index % 7, index // 7, 1, 1)
-                content.append(grid)
-                hint = label("選擇表情符號後，會加入訊息輸入框。", "subtle")
-                hint.set_margin_top(12)
-                content.append(hint)
+            for kind, title in (("sticker", "貼圖"), ("emoji", "表情符號")):
+                if kind == "sticker" and emoji_only:
+                    continue
+                heading.append(button(None, lambda value=kind: choose_kind(value), "sticker-kind" + (" active" if state["kind"] == kind else ""), text=title))
+            grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, column_spacing=4, row_spacing=4)
+            grid.add_css_class("sticker-grid")
+            grid.set_valign(Gtk.Align.START)
+            if state["kind"] == "emoji":
+                grid.set_min_children_per_line(8)
+                grid.set_max_children_per_line(8)
+                for glyph in EMOJI:
+                    grid.append(button(None, lambda value=glyph: self.insert_emoji(value), "emoji", f"插入 {glyph}", text=glyph))
+                content.set_child(grid)
+                strip_scroll.set_visible(False)
                 return
-            pack = packs[state["tab"]]
-            stickers = pack.get("stickers", [])
-            demo_pack = pack.get("id") == "demo"
-            grid = Gtk.Grid(column_spacing=9, row_spacing=9, column_homogeneous=True)
-            for index, sticker in enumerate(stickers[state["page"] * 48:(state["page"] + 1) * 48]):
-                tile = box(V, 2)
-                url = str(sticker.get("url", ""))
-                if url.startswith("demo:bear-"):
-                    picture = Art("bear", url.rsplit("-", 1)[-1], 88, 85)
-                else:
-                    picture = self.sticker_picture(url, 88, 85)
-                picture.set_halign(CENTER)
-                tile.append(picture)
-                mood = MOODS[int(url.rsplit("-", 1)[-1]) % 8] if url.startswith("demo:bear-") else ""
-                if mood:
-                    tile.append(label(mood, xalign=0.5))
-                selected = state["selected"] and state["selected"][1] is sticker
-                widget = button(tile, lambda value=sticker: pick(value), "sticker-tile" + (" selected" if selected else ""), f"預覽 {mood or '貼圖'}")
-                self.sticker_choices.append(widget)
-                grid.attach(widget, index % 4, index // 4, 1, 1)
-            content.append(grid)
-            pages = max(1, (len(stickers) + 47) // 48)
-            if pages > 1:
-                paging = box(H, 8, halign=CENTER)
-                paging.set_margin_top(12)
-                previous = icon_button("back", lambda: turn(-1), "上一頁", 18)
-                previous.set_sensitive(state["page"] > 0)
-                following = icon_button("chevron", lambda: turn(1), "下一頁", 18)
-                following.set_sensitive(state["page"] + 1 < pages)
-                paging.append(previous)
-                paging.append(label(f"{state['page'] + 1} / {pages}", "subtle"))
-                paging.append(following)
-                content.append(paging)
-            if state["selected"]:
-                sticker = state["selected"][1]
-                url = str(sticker.get("url", ""))
-                name = f"「{MOODS[int(url.rsplit('-', 1)[-1]) % 8]}」" if url.startswith("demo:bear-") else "貼圖"
-                caption = f"已選擇{name} · {pack.get('name', '貼圖')}" + (" · 原創示範貼圖" if demo_pack else "")
-            else:
-                caption = "選擇一張貼圖，再按傳送。"
-            hint = label(caption, "subtle")
-            hint.set_margin_top(15)
-            content.append(hint)
-            footer.append(self.modal_actions(send, "傳送貼圖"))
-            self.sticker_send_button = footer.get_first_child().get_last_child().get_last_child()
-            self.sticker_send_button.set_sensitive(bool(state["selected"]))
+            strip_scroll.set_visible(True)
+            grid.set_min_children_per_line(4)
+            grid.set_max_children_per_line(4)
+            if self.recent_stickers:
+                strip.append(button(icon("clock", 20), lambda: choose_tab("recent"), "sticker-pack" + (" active" if state["tab"] == "recent" else ""), "最近使用"))
+            for index, pack in enumerate(packs):
+                strip.append(button(self.sticker_tile_picture(pack["stickers"][0], 28), lambda value=index: choose_tab(value),
+                                    "sticker-pack" + (" active" if state["tab"] == index else ""), pack.get("name", "貼圖")))
+            if state["tab"] == "recent":
+                for entry in self.recent_stickers:
+                    grid.append(tile(entry["package_id"], entry))
+            elif state["tab"] is not None:
+                pack = packs[state["tab"]]
+                for sticker in pack["stickers"]:
+                    grid.append(tile(sticker.get("package_id") or pack["id"], sticker))
+            content.set_child(grid)
+
+        def choose_kind(value):
+            state["kind"] = value
+            render()
 
         def choose_tab(value):
-            state.update(tab=value, page=0, selected=first(value))
-            render()
-
-        def turn(amount):
-            state["page"] += amount
-            render()
-
-        def pick(sticker):
-            pack = packs[state["tab"]]
-            state["selected"] = (pack, sticker)
+            state["tab"] = value
             render()
         render()
-        body.append(footer)
-        self.open_modal("stickers", "用表情，說點心裡話。", body)
+        popover.set_child(panel)
+        popover.popup()
 
     def insert_emoji(self, glyph):
-        self.close_modal()
         buffer = self.compose.get_buffer()
         buffer.insert_at_cursor(glyph)
         self.compose.grab_focus()
@@ -1931,7 +2596,12 @@ class Application(Gtk.Application):
             if generation == self.generation and self.state.session == "ready" and response == Gtk.ResponseType.ACCEPT:
                 files = chooser.get_files()
                 paths = [files.get_item(i).get_path() for i in range(files.get_n_items())]
-                self.queue_files([path for path in paths if path], chat_id)
+                paths = [path for path in paths if path]
+                if chat_id == self.state.selected:
+                    self.add_images([p for p in paths if self.is_image(p)])
+                    paths = [p for p in paths if not self.is_image(p)]
+                if paths:
+                    self.queue_files(paths, chat_id)
             chooser.destroy()
         dialog.connect("response", selected)
         dialog.show()
@@ -1941,8 +2611,196 @@ class Application(Gtk.Application):
         if not self.can_attach():
             return False
         paths = [item.get_path() for item in value.get_files() if item.get_path()]
-        self.queue_files(paths, self.state.selected)
+        self.add_images([p for p in paths if self.is_image(p)])
+        others = [p for p in paths if not self.is_image(p)]
+        if others:
+            self.queue_files(others, self.state.selected)
         return True
+
+    # ------------------------------------------------------ composer tray
+    IMAGE_TYPES = ("png", "jpg", "jpeg", "gif")
+
+    def is_image(self, path):
+        return str(path).lower().rsplit(".", 1)[-1] in self.IMAGE_TYPES
+
+    def add_images(self, paths):
+        """Pictures wait in the composer tray as thumbnails until Send, like
+        LINE PC; each becomes its own photo message."""
+        added = 0
+        for path in paths:
+            try:
+                size = Path(path).stat().st_size
+            except OSError:
+                continue
+            if size > 20 * 1024 * 1024:
+                self.toast("照片超過 20 MB，請改用檔案傳送。", True)
+                continue
+            if len(self.pending_images) >= MAX_QUEUE:
+                self.toast("一次最多傳送 20 張照片。")
+                break
+            self.pending_images.append(str(path))
+            added += 1
+        if added:
+            self.render_tray()
+            self.update_send()
+            self.compose.grab_focus()
+
+    def render_tray(self):
+        clear(self.tray)
+        for index, path in enumerate(self.pending_images):
+            cell = Gtk.Overlay()
+            picture = Gtk.Picture.new_for_filename(path)
+            picture.set_size_request(64, 64)
+            picture.set_can_shrink(True)
+            try:
+                picture.set_content_fit(Gtk.ContentFit.COVER)
+            except AttributeError:
+                pass
+            picture.add_css_class("tray-thumb")
+            picture.set_overflow(Gtk.Overflow.HIDDEN)
+            cell.set_child(picture)
+            remove = icon_button("x", lambda value=index: self.remove_image(value), "移除", 11, "tray-remove")
+            remove.set_halign(END)
+            remove.set_valign(START)
+            cell.add_overlay(remove)
+            self.tray.append(cell)
+        self.tray.set_visible(bool(self.pending_images))
+
+    def remove_image(self, index):
+        if 0 <= index < len(self.pending_images):
+            self.pending_images.pop(index)
+        self.render_tray()
+        self.update_send()
+
+    def clear_tray(self):
+        self.pending_images = []
+        self.render_tray()
+
+    def send_images(self, chat_id, paths, reply_to=""):
+        generation = self.generation
+        remaining = list(paths)
+
+        def next_image(response=None):
+            if generation != self.generation:
+                return
+            if response is not None:
+                if not response.get("ok"):
+                    self.toast(self.error(response), True)
+                self.after_message(chat_id)
+            if not remaining:
+                self.set_progress(None)
+                return
+            path = remaining.pop(0)
+            done = len(paths) - len(remaining)
+            self.set_progress(f"正在傳送照片 {done}/{len(paths)}…")
+            self.core.request("images.send", {"chat_id": chat_id, "path": path}, next_image)
+        next_image()
+
+    def set_progress(self, text):
+        if text:
+            self.composer_progress.set_text(text)
+        self.composer_progress.set_visible(bool(text))
+
+    def paste_clipboard(self):
+        """Ctrl+V with an image on the clipboard adds it to the tray."""
+        clipboard = self.window.get_clipboard()
+        formats = clipboard.get_formats()
+        if formats.contain_gtype(Gdk.FileList):
+            def files_ready(source, result):
+                try:
+                    value = source.read_value_finish(result)
+                except GLib.Error:
+                    return
+                paths = [item.get_path() for item in value.get_files() if item.get_path()]
+                images = [p for p in paths if self.is_image(p)]
+                self.add_images(images)
+                others = [p for p in paths if not self.is_image(p)]
+                if others and self.can_attach():
+                    self.queue_files(others, self.state.selected)
+            clipboard.read_value_async(Gdk.FileList, GLib.PRIORITY_DEFAULT, None, files_ready)
+            return True
+        if not formats.contain_gtype(Gdk.Texture):
+            return False
+
+        def texture_ready(source, result):
+            try:
+                texture = source.read_texture_finish(result)
+            except GLib.Error:
+                return
+            if texture is None:
+                return
+            path = self.temp_image_path("paste")
+            texture.save_to_png(str(path))
+            self.add_images([path])
+        clipboard.read_texture_async(None, texture_ready)
+        return True
+
+    def temp_image_path(self, prefix):
+        directory = Path(GLib.get_user_cache_dir()) / "matrix-line" / "outgoing"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return directory / f"{prefix}-{uuid.uuid4().hex[:12]}.png"
+
+    def take_screenshot(self):
+        """xdg-desktop-portal Screenshot (interactive) — works on GNOME/KDE
+        under Wayland and X11; the picture lands in the composer tray."""
+        if not self.can_attach():
+            return
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except GLib.Error:
+            self.toast("找不到桌面服務，無法擷取畫面。", True)
+            return
+        token = "line" + uuid.uuid4().hex[:8]
+        sender = bus.get_unique_name()[1:].replace(".", "_")
+        handle = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
+
+        def response(connection, sender_name, path, interface, signal, parameters):
+            bus.signal_unsubscribe(self.screenshot_signal)
+            code, results = parameters.unpack()
+            if code != 0:
+                return
+            uri = results.get("uri", "")
+            source = Gio.File.new_for_uri(uri).get_path() if uri else None
+            if source:
+                # Copy out of the portal's location, then remove its temp file.
+                target = self.temp_image_path("screenshot")
+                try:
+                    Gio.File.new_for_path(source).move(Gio.File.new_for_path(str(target)), Gio.FileCopyFlags.OVERWRITE, None, None, None)
+                except GLib.Error:
+                    target = source
+                self.window.present()
+                self.add_images([str(target)])
+        self.screenshot_signal = bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", handle, None, Gio.DBusSignalFlags.NO_MATCH_RULE, response)
+        options = {"handle_token": GLib.Variant("s", token), "interactive": GLib.Variant("b", True), "modal": GLib.Variant("b", True)}
+
+        def called(connection, result):
+            try:
+                connection.call_finish(result)
+            except GLib.Error:
+                bus.signal_unsubscribe(self.screenshot_signal)
+                self.toast("此桌面環境不支援擷取畫面（需要 xdg-desktop-portal）。", True)
+        bus.call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Screenshot", "Screenshot",
+                 GLib.Variant("(sa{sv})", ("", options)), None, Gio.DBusCallFlags.NONE, -1, None, called)
+
+    # ---------------------------------------------------------------- replies
+    def start_reply(self, message):
+        self.replying = message
+        name = "你" if message.get("mine") else (message.get("sender_name") or self.state.name_of(message.get("sender_id")))
+        self.reply_text.set_text(f"{name}：{self.summary(message)}")
+        self.reply_bar.set_visible(True)
+        self.compose.grab_focus()
+
+    def cancel_reply(self):
+        self.replying = None
+        self.reply_bar.set_visible(False)
+
+    def summary(self, message):
+        if message.get("unsent"):
+            return "已收回訊息"
+        kind = message.get("kind") or "text"
+        if kind == "text":
+            return str(message.get("text") or "").replace("\ufffc", "").replace("\n", " ")
+        return media_label(message)
 
     def queue_files(self, paths, chat_id):
         accepted = []
@@ -2064,7 +2922,8 @@ class Application(Gtk.Application):
     def update_capabilities(self):
         files = bool(self.state.capabilities.get("files"))
         self.file_button.set_sensitive(files)
-        self.photo_button.set_sensitive(files)
+        self.photo_button.set_sensitive(bool(self.state.capabilities.get("images")))
+        self.screenshot_button.set_sensitive(bool(self.state.capabilities.get("images")))
         self.sticker_button.set_sensitive(bool(self.state.capabilities.get("stickers")))
         self.update_send()
 
@@ -2072,7 +2931,24 @@ class Application(Gtk.Application):
         if self.core and self.state.session == "ready":
             self.core.request("chats.refresh", callback=lambda reply: self.toast("已重新整理") if reply.get("ok") else self.toast(self.error(reply), True))
 
+    def reading(self):
+        """A chat counts as read only while the user can actually see it."""
+        return bool(self.window and self.window.get_visible() and self.window.is_active()
+                    and self.state.selected and self.main_stack.get_visible_child_name() == "chat")
+
+    def focus_changed(self, *_):
+        if self.reading():
+            chat_id = self.state.selected
+            if self.state.chats.get(chat_id, {}).get("unread"):
+                self.state.chats[chat_id]["unread"] = 0
+                self.render_list()
+                self.render_rail()
+            self.withdraw_notification("chat-" + str(chat_id)[:64])
+            self.mark_read()
+
     def mark_read(self):
+        if not self.reading():
+            return
         messages = [m for m in self.state.messages.get(self.state.selected, []) if not str(m["id"]).startswith("pending-")]
         if messages and self.core and self.state.selected != KEEP_ID:
             self.core.request("messages.read", {"chat_id": self.state.selected, "message_id": messages[-1]["id"]})
@@ -2098,6 +2974,7 @@ class Application(Gtk.Application):
         self.dialogs.clear()
         self.close_modal()
         self.menu.popdown()
+        self.sticker_popover.popdown()
         self.state.clear()
         self.persistent = None
         self.compose.get_buffer().set_text("")
@@ -2133,6 +3010,8 @@ class Application(Gtk.Application):
             self.footer.remove_css_class(name)
         if level:
             self.footer.add_css_class(level)
+        # Like LINE, the list has no tagline: the bar shows only problems.
+        self.footer.set_visible(bool(level))
 
     def load_local(self):
         demo = self.state.mode == "demo"
@@ -2167,7 +3046,7 @@ class Application(Gtk.Application):
                 if self.state.mode != "demo" and self.persistent is False:
                     self.set_footer("已連線 · 登入未保存至鑰匙圈", "warning")
                 else:
-                    self.set_footer("每一段對話，都在這裡。")
+                    self.set_footer("")
             elif state == "connecting":
                 self.set_footer("正在重新連線…", "warning")
             elif state == "error":
@@ -2185,14 +3064,12 @@ class Application(Gtk.Application):
                 self.state.chats[self.state.selected]["unread"] = 0
             self.render_rail()
             self.render_sidebar()
-            if self.section in ("friends", "calls"):
-                self.render_alternate()
             if not self.state.selected or self.state.selected not in self.state.chats:
-                rows = self.visible_chats()
-                pinned = [chat for chat in rows if self.prefs.has("pinned", chat["id"])]
-                first = (pinned or rows or [None])[0]
-                if first:
-                    self.select_chat(first["id"])
+                # LINE opens on a blank pane: opening a chat is always the
+                # user's choice, so no read receipt is sent at login.
+                self.state.selected = None
+                if self.main_stack.get_visible_child_name() == "chat":
+                    self.main_stack.set_visible_child_name("empty")
             else:
                 self.render_header()
                 self.render_details()
@@ -2205,12 +3082,39 @@ class Application(Gtk.Application):
             if added:
                 self.notify(message)
             if chat_id == self.state.selected:
+                if added and not message.get("mine") and not self.reading():
+                    chat = self.state.chats.get(chat_id)
+                    if chat is not None:
+                        chat["unread"] = chat.get("unread", 0) + 1
                 self.after_message(chat_id)
                 self.mark_read()
             else:
                 self.render_list()
                 self.render_rail()
                 self.render_sidebar()
+        elif event == "read":
+            # Read receipt (op 55): someone read up to `time` in this chat.
+            chat = self.state.chats.get(str(data.get("chat_id", "")))
+            reader = str(data.get("reader", ""))
+            if chat is None or not reader:
+                return
+            readers = chat.setdefault("read_by", {}) or {}
+            chat["read_by"] = readers
+            if int(data.get("time", 0) or 0) > int(readers.get(reader, 0) or 0):
+                readers[reader] = int(data.get("time", 0) or 0)
+                if chat["id"] == self.state.selected and self.main_stack.get_visible_child_name() == "chat":
+                    self.render_messages()
+        elif event == "unsent":
+            chat_id = str(data.get("chat_id", ""))
+            message_id = str(data.get("message_id", ""))
+            changed = False
+            for message in self.state.messages.get(chat_id, []):
+                if str(message.get("id")) == message_id and not message.get("unsent"):
+                    message.update(unsent=True, kind="unsent", text="", url="")
+                    message.pop("emoji", None)
+                    changed = True
+            if changed and chat_id == self.state.selected and self.main_stack.get_visible_child_name() == "chat":
+                self.render_messages()
         elif event == "notice":
             self.toast(data.get("message", ""), data.get("level") == "error")
         elif event == "auth":
@@ -2249,6 +3153,7 @@ class Application(Gtk.Application):
         if chat.get("kind") == "group":
             body = f"{message.get('sender_name') or '成員'}：{body}"
         notification.set_body(str(body)[:200])
+        notification.set_default_action_and_target("app.open-chat", GLib.Variant.new_string(chat_id))
         self.send_notification("chat-" + chat_id[:64], notification)
 
     def toast(self, text, error=False):
@@ -2321,19 +3226,23 @@ class Application(Gtk.Application):
             self.check("PIN view shows verification code", self.pin_label.get_visible() and self.pin_label.get_text() == "1234")
             self.auth_busy(False)
             self.smoke_phase = 1
-        elif step == 1 and self.state.session == "ready" and len(self.state.chats) > 1 and self.state.selected:
+        elif step == 1 and self.state.session == "ready" and len(self.state.chats) > 1:
             self.check("native workspace ready", self.pages.get_visible_child_name() == "workspace")
             self.check("demo is clearly identified", self.state.mode == "demo" and "離線展示" in self.mode_label.get_text())
             sidebar = self.labels_in(self.chat_list)
-            self.check("chat list shows pinned and all sections", "置頂聊天" in sidebar and "所有聊天" in sidebar)
-            self.check("reference chat is selected first", self.state.selected == "demo-weekend" and self.chat_title.get_text() == "週末散步計畫")
+            self.check("chat list has no section taglines", "置頂聊天" not in sidebar and "週末散步計畫 (5)" in sidebar)
+            self.check("three-column layout: info panel closed", not self.details.get_visible())
+            self.check("no chat opens by itself at login", self.main_stack.get_visible_child_name() == "empty")
+            self.select_chat("demo-weekend")
+            self.check("reference chat opens on click", self.state.selected == "demo-weekend" and self.chat_title.get_text() == "週末散步計畫 (5)")
+            self.toggle_details()
             self.check("artwork renders through the SVG loader", art.texture("bear", 0, 120, 108, None).get_width() == 120)
-            self.check("details panel shows tabs and members", {"資訊", "筆記本", "相簿", "檔案", "4 位成員"} <= set(self.labels_in(self.detail_contents)))
+            self.check("details panel shows tabs and members", {"資訊", "筆記本", "相簿", "檔案", "5 位成員"} <= set(self.labels_in(self.detail_contents)))
             self.search.set_text("怡庭")
             self.check("search filters chat rows by title or member", "陳怡庭" in self.labels_in(self.chat_list) and "我們這一家" not in self.labels_in(self.chat_list))
             self.search.set_text("")
             self.set_filter("group")
-            self.check("group filter keeps only groups", "陳怡庭" not in self.labels_in(self.chat_list) and "我們這一家" in self.labels_in(self.chat_list))
+            self.check("group filter keeps only groups", "陳怡庭" not in self.labels_in(self.chat_list) and "我們這一家 (3)" in self.labels_in(self.chat_list))
             self.set_filter("all")
             self.smoke_chat = self.state.selected
             self.compose.get_buffer().set_text("GTK 原生元件測試訊息")
@@ -2362,14 +3271,15 @@ class Application(Gtk.Application):
                 self.toggle_pref("muted")
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
-                self.check("conversation search counts matches", self.search_count.get_text() == "2 則結果")
+                self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
                 self.close_search()
                 self.select_chat(KEEP_ID)
                 self.compose.get_buffer().set_text("Keep 本機測試")
                 self.send_button.emit("clicked")
                 self.check("Keep memo stays local", any(m.get("text") == "Keep 本機測試" for m in self.state.messages[KEEP_ID]) and self.keep.items[-1]["text"] == "Keep 本機測試")
                 self.navigate("friends")
-                self.check("friends view uses live widgets", self.side_title.get_text() == "好友" and self.main_stack.get_visible_child_name() == "alternate" and "讓聯繫，更靠近。" in self.labels_in(self.alternate))
+                friends = self.labels_in(self.chat_list)
+                self.check("friends list is grouped like LINE", self.side_title.get_text() == "好友" and {"我的最愛 2", "群組 3", "好友 5"} <= set(friends))
                 self.open_profile("demo-kai")
                 self.check("profile modal opens", self.modal_kind == "profile")
                 self.open_direct("demo-kai")
@@ -2379,12 +3289,50 @@ class Application(Gtk.Application):
                 self.close_modal()
                 self.select_chat(self.smoke_chat)
                 self.check("return to conversation", self.main_stack.get_visible_child_name() == "chat")
+                chat = self.current_chat()
+                own = [item for item in self.state.messages.get(chat["id"], []) if item.get("mine")]
+                if own:
+                    before = self.read_label(own[-1], chat)
+                    self.on_event("read", {"chat_id": chat["id"], "reader": "smoke-reader", "time": int(own[-1].get("time", 0)) + 1})
+                    self.check("read receipt event updates 已讀", self.read_label(own[-1], chat) != before and self.read_label(own[-1], chat).startswith("已讀"))
+                others = [item for item in self.state.messages.get(chat["id"], []) if not item.get("mine") and item.get("kind") == "text"]
+                if others:
+                    self.on_event("unsent", {"chat_id": chat["id"], "message_id": others[0]["id"]})
+                    self.check("unsent event turns the bubble into a notice", others[0].get("unsent") and others[0].get("kind") == "unsent")
+                texts = [item for item in self.state.messages.get(chat["id"], []) if item.get("kind") == "text" and not item.get("unsent")]
+                if texts:
+                    self.open_forward(texts[0])
+                    for row in self.forward_rows[:2]:
+                        row.emit("clicked")
+                    self.check("share dialog multi-selects chats", self.modal_kind == "forward" and self.forward_share.get_sensitive()
+                               and self.forward_share.get_child().get_text() == "分享（2）")
+                    self.close_modal()
+                selected = self.state.selected
+                self.window_key(None, Gdk.KEY_Tab, 0, Gdk.ModifierType.CONTROL_MASK)
+                moved = self.state.selected
+                self.window_key(None, Gdk.KEY_Tab, 0, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK)
+                self.check("Ctrl+Tab cycles chats", moved != selected and self.state.selected == selected)
+                self.window_key(None, Gdk.KEY_1, 0, Gdk.ModifierType.CONTROL_MASK)
+                friends = self.section == "friends"
+                self.window_key(None, Gdk.KEY_2, 0, Gdk.ModifierType.CONTROL_MASK)
+                self.check("Ctrl+1 / Ctrl+2 switch 好友 and 聊天", friends and self.section == "chats")
+                previous = self.prefs.settings["theme"]
+                self.prefs.settings["theme"] = "dark"
+                self.apply_theme()
+                dark = self.window.has_css_class("dark")
+                self.prefs.settings["theme"] = "light"
+                self.apply_theme()
+                self.check("螢幕顯示模式 switches dark and light", dark and not self.window.has_css_class("dark"))
+                self.prefs.settings["theme"] = previous
+                self.apply_theme()
                 self.sticker_button.emit("clicked")
                 self.smoke_phase = 3
-        elif step == 3 and self.modal_kind == "stickers" and getattr(self, "sticker_choices", []):
+        elif step == 3 and self.sticker_popover.get_visible() and getattr(self, "sticker_choices", []):
             self.check("eight reference stickers listed", len(self.sticker_choices) == 8)
             self.sticker_choices[0].emit("clicked")
-            self.sticker_send_button.emit("clicked")
+            self.sticker_choices[0].emit("clicked")
+            self.check("sticker panel stays open after sending", self.sticker_popover.get_visible())
+            self.sticker_popover.popdown()
             self.smoke_phase = 4
         elif step == 4:
             if len([item for item in self.state.messages.get(self.smoke_chat, []) if item.get("kind") == "sticker"]) >= 2:
@@ -2453,13 +3401,12 @@ class Application(Gtk.Application):
             callback = recorder.calls.pop()[2]
             self.generation += 1
             callback({"ok": True, "result": {"packs": []}})
-            self.check("stale sticker catalog cannot open after account changes", self.modal_kind != "stickers")
+            self.check("stale sticker catalog cannot open after account changes", not self.sticker_popover.get_visible())
             self.open_stickers()
             callback = recorder.calls.pop()[2]
             callback({"ok": True, "result": {"packs": [{"id": "demo", "name": "Demo", "stickers": [{"id": "bear-1", "url": "demo:bear-1"}]}]}})
-            self.sticker_choices[0].emit("clicked")
             self.generation += 1
-            self.sticker_send_button.emit("clicked")
+            self.sticker_choices[0].emit("clicked")
             self.check("stale sticker button cannot send across sessions", not recorder.calls)
             self.edit_note(self.current_chat())
             dialogs = tuple(self.dialogs)

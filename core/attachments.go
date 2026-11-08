@@ -1,12 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/beeper/line/pkg/line"
 
 	"matrix-line/core/internal/attachments"
 )
@@ -14,7 +22,10 @@ import (
 func (b *backend) handleAttachment(req request) (any, error) {
 	switch req.Method {
 	case "stickers.list":
-		if err := params(req.Params, &struct{}{}); err != nil {
+		var reload struct {
+			Reload bool `json:"reload"`
+		}
+		if err := params(req.Params, &reload); err != nil {
 			return nil, err
 		}
 		if b.demo {
@@ -24,6 +35,9 @@ func (b *backend) handleAttachment(req request) (any, error) {
 				stickers[i] = attachments.Sticker{ID: id, PackageID: "demo", URL: "demo:" + id}
 			}
 			return map[string]any{"packs": []attachments.Pack{{ID: "demo", Name: "散步小熊", Stickers: stickers}}}, nil
+		}
+		if b.catalog != nil && !reload.Reload {
+			return map[string]any{"packs": b.catalog.Packs()}, nil
 		}
 		catalog, err := attachments.LoadCatalog(b.ctx, b.api(), b.region, time.Now())
 		if err != nil {
@@ -116,6 +130,102 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		}
 		b.acceptMessage(msg, true)
 		return map[string]any{"message": msg}, nil
+	case "images.send":
+		// Sends a picture as a LINE photo message (contentType 1), not a file.
+		var p struct {
+			ChatID string `json:"chat_id"`
+			Path   string `json:"path"`
+		}
+		if err := params(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if !b.validChat(p.ChatID) || p.Path == "" {
+			return nil, fail("invalid_params", "請選擇有效的聊天與圖片。")
+		}
+		var msg message
+		if b.demo {
+			data, err := attachments.ReadFile(p.Path)
+			if err != nil {
+				return nil, fail("file_error", err.Error())
+			}
+			cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+			if err != nil {
+				return nil, fail("file_error", attachments.ErrNotImage.Error())
+			}
+			msg = b.demoSend(p.ChatID, "[照片]")
+			msg.Kind = "image"
+			msg.URL = "file://" + p.Path
+			msg.Width, msg.Height = cfg.Width, cfg.Height
+		} else {
+			prepared, err := attachments.PrepareImage(b.ctx, b.api(), p.ChatID, p.Path, nil)
+			if err != nil {
+				if errors.Is(err, attachments.ErrFileSize) || errors.Is(err, attachments.ErrNotImage) {
+					return nil, fail("file_error", err.Error())
+				}
+				return nil, err
+			}
+			var raw *line.Message
+			if prepared.Plain {
+				raw, err = b.sendPlain(p.ChatID, prepared.ContentType, prepared.Metadata)
+				if err == nil {
+					if upErr := attachments.PlainUpload(b.api(), raw.ID, prepared.PlainData); upErr != nil {
+						b.notice("照片訊息已送出，但圖片上傳失敗；對方可能看不到照片。")
+					}
+				}
+			} else {
+				raw, err = b.sendPayload(p.ChatID, prepared.ContentType, prepared.Metadata, prepared.Payload)
+			}
+			if err != nil {
+				return nil, err
+			}
+			msg = b.convertMessage(raw)
+			msg.Width, msg.Height = prepared.Width, prepared.Height
+			if prepared.PlainData != nil {
+				b.cacheImage(raw.ID, prepared.PlainData)
+			} else if data, readErr := attachments.ReadFile(p.Path); readErr == nil {
+				b.cacheImage(raw.ID, data)
+			}
+		}
+		b.acceptMessage(msg, true)
+		return map[string]any{"message": msg}, nil
+	case "images.fetch":
+		// Downloads (and decrypts) a photo into memory and returns it as
+		// base64 so the UI never sees LINE credentials or key material.
+		var p struct {
+			ChatID    string `json:"chat_id"`
+			MessageID string `json:"message_id"`
+			Preview   bool   `json:"preview"`
+		}
+		if err := params(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if !b.hasMessage(p.ChatID, p.MessageID) {
+			return nil, fail("invalid_params", "照片不屬於此聊天。")
+		}
+		if data, ok := b.imageCache[p.MessageID]; ok {
+			return map[string]any{"data": base64.StdEncoding.EncodeToString(data)}, nil
+		}
+		if b.demo {
+			return nil, fail("unsupported", "示範模式沒有 LINE 照片。")
+		}
+		raw := b.rawMessages[p.MessageID]
+		data, err := attachments.DownloadImage(b.ctx, b.api(), raw, b.decryptedPayloads[p.MessageID], p.Preview)
+		if err != nil && p.Preview {
+			data, err = attachments.DownloadImage(b.ctx, b.api(), raw, b.decryptedPayloads[p.MessageID], false)
+		}
+		if err != nil {
+			if errors.Is(err, attachments.ErrAuthentication) {
+				return nil, fail("file_authentication", "照片驗證失敗，已停止顯示。")
+			}
+			if isAuthError(err) {
+				return nil, err
+			}
+			return nil, fail("image_unavailable", "無法下載照片，可能已過期。")
+		}
+		if !p.Preview {
+			b.cacheImage(p.MessageID, data)
+		}
+		return map[string]any{"data": base64.StdEncoding.EncodeToString(data)}, nil
 	case "files.download":
 		var p struct {
 			ChatID    string `json:"chat_id"`
@@ -142,6 +252,22 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		return map[string]string{"path": p.Path}, nil
 	}
 	return nil, fmt.Errorf("unknown attachment method")
+}
+
+// cacheImage keeps recently viewed or sent photos in memory (≈64 MiB cap) so
+// reopening a chat does not download them again.
+func (b *backend) cacheImage(id string, data []byte) {
+	if b.imageCache == nil {
+		b.imageCache = map[string][]byte{}
+	}
+	total := len(data)
+	for _, v := range b.imageCache {
+		total += len(v)
+	}
+	if total > 64<<20 {
+		b.imageCache = map[string][]byte{}
+	}
+	b.imageCache[id] = data
 }
 
 func toType(chatID string) int {

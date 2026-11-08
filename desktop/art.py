@@ -14,6 +14,13 @@ gi.require_version("Graphene", "1.0")
 from gi.repository import Gdk, GdkPixbuf, Graphene, Gtk
 
 ICON_PATHS = {
+    # Filled rail glyphs, drawn like LINE's navigation icons.
+    "rail-friends": '<circle cx="12" cy="7.6" r="4.4" fill="currentColor" stroke="none"/><path d="M3.6 20.6c.5-4.6 4-7.4 8.4-7.4s7.9 2.8 8.4 7.4Z" fill="currentColor" stroke="none"/>',
+    "rail-chats": '<path d="M12 3.4c5 0 9 3.3 9 7.5s-4 7.5-9 7.5c-.9 0-1.7-.1-2.5-.3L5 20.6l.7-3.6C4 15.6 3 13.4 3 10.9c0-4.2 4-7.5 9-7.5Z" fill="currentColor" stroke="none"/><path d="M8 11h.01M12 11h.01M16 11h.01" stroke="#202a43" stroke-width="2.2"/>',
+    "rail-add": '<circle cx="10" cy="7.6" r="4.2" fill="currentColor" stroke="none"/><path d="M2.4 20.6c.5-4.5 3.7-7.2 7.6-7.2 1.9 0 3.6.6 4.9 1.7v5.5Z" fill="currentColor" stroke="none"/><path d="M18.5 13.5v7M15 17h7" stroke-width="2"/>',
+    "more-v": '<path d="M12 5h.01M12 12h.01M12 19h.01" stroke-width="2.6"/>',
+    "clip": '<path d="m20 11.5-8 8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>',
+    "dots": '<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.6"/>',
     "chat": '<path d="M20 11.3a8 8 0 0 1-8.2 7.8 10.3 10.3 0 0 1-3.4-.6L4 20l.8-4.1A7.2 7.2 0 0 1 3.5 11c0-4.3 3.7-7.8 8.3-7.8S20 6.9 20 11.3Z"/><path d="M7.7 10.9h.1m4 0h.1m4 0h.1"/>',
     "friends": '<circle cx="9" cy="7.5" r="3.2"/><path d="M2.7 20v-2.2a6.3 6.3 0 0 1 12.6 0V20M16 4.7a3.2 3.2 0 0 1 0 6.2M18 14a5 5 0 0 1 3 4.8V20"/>',
     "phone": '<path d="m7.7 3 2.1 4.5-2.2 2.4a15 15 0 0 0 6.7 6.7l2.4-2.2 4.3 2.2c-.2 2.5-1.4 4.4-3.8 4.4C10.8 21 3 13.2 3 6.8 3 4.4 5.1 3.1 7.7 3Z"/>',
@@ -35,6 +42,7 @@ ICON_PATHS = {
     "image": '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m4 17 5-5 4 4 3-3 5 5"/>',
     "file": '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z"/><path d="M14 3v6h6M8 13h8m-8 4h5"/>',
     "smile": '<circle cx="12" cy="12" r="9"/><path d="M8 14a4 4 0 0 0 8 0M8 9h.01M16 9h.01"/>',
+    "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     "crop": '<path d="M7 3v14h14M3 7h14v14M3 3l18 18"/>',
     "send": '<path d="m3 3 19 9-19 9 4-9-4-9Zm4 9h15"/>',
     "download": '<path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>',
@@ -170,7 +178,12 @@ def bear(index=0):
     )
 
 
+EXTRA = {}
+
+
 def source(kind, value=None):
+    if kind in EXTRA:
+        return EXTRA[kind]
     if kind == "icon":
         return icon(value)
     if kind == "portrait":

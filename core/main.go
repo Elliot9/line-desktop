@@ -56,6 +56,9 @@ type backend struct {
 	rawMessages       map[string]*line.Message
 	decryptedPayloads map[string][]byte
 	catalog           *attachments.Catalog
+	pendingReply      string
+	pushPreserved     bool
+	imageCache        map[string][]byte
 	region            string
 	savedRevisionAt   time.Time
 }
@@ -153,7 +156,9 @@ func (b *backend) notice(text string) {
 	b.emit("notice", map[string]string{"level": "warning", "message": text})
 }
 func (b *backend) stop() {
-	if b.session != nil { b.previousSession = b.session }
+	if b.session != nil {
+		b.previousSession = b.session
+	}
 	b.generation++
 	if b.loginCancel != nil {
 		b.loginCancel()
@@ -165,6 +170,7 @@ func (b *backend) stop() {
 		b.crypto = nil
 	}
 	b.session = nil
+	b.pushPreserved = false
 	b.persistent = false
 }
 func (b *backend) clearData() {
@@ -303,8 +309,9 @@ func (b *backend) handle(req request) (any, error, bool) {
 		return map[string]any{"messages": list}, err, false
 	case "messages.send":
 		var p struct {
-			ChatID string `json:"chat_id"`
-			Text   string `json:"text"`
+			ChatID  string `json:"chat_id"`
+			Text    string `json:"text"`
+			ReplyTo string `json:"reply_to"`
 		}
 		if err := params(req.Params, &p); err != nil {
 			return nil, err, false
@@ -312,12 +319,16 @@ func (b *backend) handle(req request) (any, error, bool) {
 		if !b.validChat(p.ChatID) || strings.TrimSpace(p.Text) == "" || len([]rune(p.Text)) > maxText {
 			return nil, fail("invalid_params", "請選擇有效聊天，並輸入 1 至 10000 字的訊息。"), false
 		}
+		if p.ReplyTo != "" && !b.hasMessage(p.ChatID, p.ReplyTo) {
+			return nil, fail("invalid_params", "要回覆的訊息不在此聊天。"), false
+		}
 		var msg message
 		var err error
 		if b.demo {
 			msg = b.demoSend(p.ChatID, p.Text)
+			msg.ReplyTo = p.ReplyTo
 		} else {
-			msg, err = b.sendText(p.ChatID, p.Text)
+			msg, err = b.sendReply(p.ChatID, p.Text, p.ReplyTo)
 		}
 		if err == nil {
 			b.acceptMessage(msg, true)
@@ -350,7 +361,90 @@ func (b *backend) handle(req request) (any, error, bool) {
 		}
 		b.handleAuthError(err)
 		return nil, err, false
-	case "stickers.list", "messages.sticker", "files.send", "files.download":
+	case "messages.unsend":
+		var p struct {
+			ChatID    string `json:"chat_id"`
+			MessageID string `json:"message_id"`
+		}
+		if err := params(req.Params, &p); err != nil {
+			return nil, err, false
+		}
+		if !b.validChat(p.ChatID) || !b.hasMessage(p.ChatID, p.MessageID) {
+			return nil, fail("invalid_params", "訊息不屬於此聊天。"), false
+		}
+		for _, m := range b.messages[p.ChatID] {
+			if m.ID == p.MessageID && (!m.Mine || time.Since(time.UnixMilli(m.Time)) > 24*time.Hour) {
+				return nil, fail("unsend_unavailable", "只能收回自己在 24 小時內傳送的訊息。"), false
+			}
+		}
+		var err error
+		if !b.demo {
+			b.sequence++
+			err = b.api().UnsendMessage(b.sequence, p.MessageID)
+		}
+		if err == nil {
+			b.markUnsent(p.ChatID, p.MessageID)
+		}
+		b.handleAuthError(err)
+		return nil, err, false
+	case "chats.delete":
+		// LINE「刪除聊天室」: removes history up to the newest message on the
+		// server (sendChatRemoved) and drops the row from the list.
+		var p struct {
+			ChatID string `json:"chat_id"`
+		}
+		if err := params(req.Params, &p); err != nil {
+			return nil, err, false
+		}
+		if !b.validChat(p.ChatID) {
+			return nil, fail("invalid_params", "聊天無效。"), false
+		}
+		var err error
+		if !b.demo {
+			lastID, lastTime := "", int64(0)
+			if list := b.messages[p.ChatID]; len(list) > 0 {
+				lastID, lastTime = list[len(list)-1].ID, list[len(list)-1].Time
+			}
+			b.sequence++
+			err = b.api().SendChatRemovedContext(b.ctx, b.sequence, p.ChatID, lastID, lastTime)
+		}
+		if err == nil {
+			delete(b.messages, p.ChatID)
+			kept := b.data.Chats[:0]
+			for _, c := range b.data.Chats {
+				if c.ID != p.ChatID {
+					kept = append(kept, c)
+				}
+			}
+			b.data.Chats = kept
+			b.emit("snapshot", b.data)
+		}
+		b.handleAuthError(err)
+		return nil, err, false
+	case "chats.read_all":
+		// 「全部標為已讀」 sends a read receipt for the newest message of each
+		// unread chat; it is an explicit user action.
+		if err := params(req.Params, &struct{}{}); err != nil {
+			return nil, err, false
+		}
+		var firstErr error
+		for i := range b.data.Chats {
+			c := &b.data.Chats[i]
+			if c.Unread == 0 {
+				continue
+			}
+			if list := b.messages[c.ID]; len(list) > 0 && !b.demo {
+				if err := b.api().SendChatChecked(c.ID, list[len(list)-1].ID); err != nil && firstErr == nil {
+					firstErr = err
+					continue
+				}
+			}
+			c.Unread = 0
+		}
+		b.emit("snapshot", b.data)
+		b.handleAuthError(firstErr)
+		return nil, firstErr, false
+	case "stickers.list", "messages.sticker", "files.send", "files.download", "images.send", "images.fetch":
 		result, err := b.handleAttachment(req)
 		b.handleAuthError(err)
 		return result, err, false
@@ -411,8 +505,9 @@ func (b *backend) acceptMessage(m message, notify bool) {
 		c := &b.data.Chats[i]
 		if c.ID == m.ChatID {
 			found = true
+			c.HasMessages = true
 			if m.Time >= c.UpdatedAt {
-				c.LastMessage = m.Text
+				c.LastMessage = b.preview(*c, m)
 				c.UpdatedAt = m.Time
 			}
 			if notify && !m.Mine {
@@ -425,7 +520,17 @@ func (b *backend) acceptMessage(m message, notify bool) {
 		if notify && !m.Mine {
 			unread = 1
 		}
-		b.data.Chats = append(b.data.Chats, chat{ID: m.ChatID, Name: b.personName(m.ChatID), Kind: chatKind(m.ChatID), LastMessage: m.Text, UpdatedAt: m.Time, Unread: unread})
+		row := chat{ID: m.ChatID, Name: b.personName(m.ChatID), Kind: chatKind(m.ChatID), UpdatedAt: m.Time, Unread: unread, HasMessages: true}
+		if p, ok := b.data.People[m.ChatID]; ok {
+			row.Avatar = p.Avatar
+		}
+		for _, p := range b.data.Contacts {
+			if p.ID == m.ChatID {
+				row.Avatar = p.Avatar
+			}
+		}
+		row.LastMessage = b.preview(row, m)
+		b.data.Chats = append(b.data.Chats, row)
 	}
 	if notify {
 		b.emit("message", map[string]any{"message": m})

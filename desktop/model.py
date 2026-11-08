@@ -22,6 +22,7 @@ class State:
     profile: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
     contacts: dict = field(default_factory=dict)
+    people: dict = field(default_factory=dict)
     chats: dict = field(default_factory=dict)
     messages: dict = field(default_factory=dict)
     drafts: dict = field(default_factory=dict)
@@ -31,6 +32,7 @@ class State:
         self.session = "logged_out"
         self.profile.clear()
         self.contacts.clear()
+        self.people.clear()
         self.chats.clear()
         self.messages.clear()
         self.drafts.clear()
@@ -39,6 +41,7 @@ class State:
     def snapshot(self, data):
         self.profile = data.get("profile") or self.profile
         self.contacts = {str(c["id"]): c for c in data.get("contacts", [])}
+        self.people.update({str(k): v for k, v in (data.get("people") or {}).items()})
         keep = self.chats.get(KEEP_ID)
         self.chats = {str(c["id"]): c for c in data.get("chats", [])}
         for chat_id, chat in self.chats.items():
@@ -52,11 +55,21 @@ class State:
     def name_of(self, person_id):
         if person_id and person_id == self.profile.get("id"):
             return self.profile.get("name", "你")
-        contact = self.contacts.get(str(person_id))
-        if contact:
-            return contact.get("name", "好友")
+        contact = self.contacts.get(str(person_id)) or self.people.get(str(person_id))
+        if contact and contact.get("name"):
+            return contact["name"]
         chat = self.chats.get(str(person_id))
         return chat.get("name", "成員") if chat else "成員"
+
+    def avatar_of(self, person_id):
+        person_id = str(person_id or "")
+        if person_id and person_id == self.profile.get("id"):
+            return self.profile.get("avatar", "")
+        for table in (self.contacts, self.people):
+            if table.get(person_id, {}).get("avatar"):
+                return table[person_id]["avatar"]
+        chat = self.chats.get(person_id)
+        return chat.get("avatar", "") if chat and chat.get("kind") == "direct" else ""
 
     def add_message(self, message):
         chat_id = str(message.get("chat_id", ""))
@@ -163,7 +176,7 @@ class Notes:
 class Preferences:
     """Per-account pinned, muted and favourite chats plus app-wide settings."""
 
-    defaults = {"enter_send": True, "notifications": True, "font_size": 14}
+    defaults = {"enter_send": True, "notifications": True, "font_size": 14, "theme": "system", "recent_stickers": []}
 
     def __init__(self):
         self.root = data_root() / "preferences"
@@ -175,6 +188,10 @@ class Preferences:
         for key, value in self.defaults.items():
             if isinstance(stored.get(key), type(value)):
                 self.settings[key] = stored[key]
+        self.settings["recent_stickers"] = [item for item in self.settings["recent_stickers"]
+                                            if isinstance(item, dict) and all(isinstance(item.get(key), str) for key in ("package_id", "id", "url"))][:24]
+        if self.settings["theme"] not in ("system", "light", "dark"):
+            self.settings["theme"] = "system"
         if self.settings["font_size"] not in (13, 14, 16):
             self.settings["font_size"] = 14
 
@@ -230,6 +247,11 @@ class Keep:
         if self.persist and self.account:
             private_write(self.root, account_file(self.root, self.account), {"items": self.items})
         return item
+
+    def remove(self, item_id):
+        self.items = [item for item in self.items if item.get("id") != item_id]
+        if self.persist and self.account:
+            private_write(self.root, account_file(self.root, self.account), {"items": self.items})
 
     def messages(self):
         return [{"id": item["id"], "chat_id": KEEP_ID, "text": item["text"], "time": item.get("time", 0), "mine": True, "kind": "text", "status": "saved"} for item in self.items]

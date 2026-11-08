@@ -34,6 +34,9 @@ type person struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Avatar string `json:"avatar,omitempty"`
+	// Friend is false for people known only from group membership or chats.
+	Friend   bool `json:"friend"`
+	Official bool `json:"official,omitempty"`
 }
 type chat struct {
 	ID          string   `json:"id"`
@@ -45,6 +48,13 @@ type chat struct {
 	Avatar      string   `json:"avatar,omitempty"`
 	MemberCount int      `json:"member_count"`
 	Members     []string `json:"members,omitempty"`
+	// Muted and Favorite mirror LINE server state (Chat.NotificationDisabled,
+	// FavoriteTimestamp). HasMessages is false for rows synthesized from contacts
+	// so the chat list shows only real conversations, like LINE Desktop.
+	Muted       bool             `json:"muted,omitempty"`
+	Favorite    bool             `json:"favorite,omitempty"`
+	HasMessages bool             `json:"has_messages"`
+	ReadBy      map[string]int64 `json:"read_by,omitempty"`
 }
 type message struct {
 	ID         string `json:"id"`
@@ -61,15 +71,30 @@ type message struct {
 	URL        string `json:"url,omitempty"`
 	StickerID  string `json:"sticker_id,omitempty"`
 	PackageID  string `json:"package_id,omitempty"`
+	// Image messages: Width/Height come from MEDIA_THUMB_INFO when present.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// ReplyTo is the quoted message ID (messageRelationType 3).
+	ReplyTo string `json:"reply_to,omitempty"`
+	Unsent  bool   `json:"unsent,omitempty"`
+	// Emoji lists LINE emoji (sticon) runs inside Text, by rune offset.
+	Emoji []emojiRun `json:"emoji,omitempty"`
+}
+type emojiRun struct {
+	Start int    `json:"start"`
+	End   int    `json:"end"`
+	URL   string `json:"url"`
 }
 type snapshot struct {
 	Profile  *person  `json:"profile"`
 	Contacts []person `json:"contacts"`
 	Chats    []chat   `json:"chats"`
+	// People resolves non-friend group members and chat partners to a name and avatar.
+	People map[string]person `json:"people"`
 }
 
 func capabilities() map[string]bool {
-	return map[string]bool{"text": true, "contacts": true, "groups": true, "stickers": true, "files": true, "images": false, "calls": false, "notes": false, "albums": false}
+	return map[string]bool{"text": true, "contacts": true, "groups": true, "stickers": true, "files": true, "images": true, "reply": true, "unsend": true, "read_receipts": true, "screenshot": true, "calls": false, "notes": false, "albums": false}
 }
 func params(raw json.RawMessage, out any) error {
 	if len(raw) == 0 {

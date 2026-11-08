@@ -31,6 +31,7 @@ func chatKind(id string) string {
 	}
 	return "direct"
 }
+
 // groupMembers lists up to maxListedMembers member IDs in a stable order so the
 // UI can draw member avatars without inflating every snapshot.
 const maxListedMembers = 24
@@ -62,7 +63,128 @@ func (b *backend) personName(id string) string {
 			return c.Name
 		}
 	}
+	if p, ok := b.data.People[id]; ok && p.Name != "" {
+		return p.Name
+	}
 	return id
+}
+
+// maxResolve bounds how many unknown people one snapshot refresh looks up.
+const maxResolve = 400
+
+// resolvePeople fills snapshot.People with names and pictures for everyone the
+// UI may show who is not a friend: group members, direct chat partners and
+// message senders. Friends are resolved from friendByID; the rest are fetched
+// with GetContactsV2 in batches and, for official accounts that the contact
+// API does not return, GetBuddyProfile.
+func (b *backend) resolvePeople(friendByID map[string]person) {
+	people := map[string]person{}
+	for id, p := range b.data.People {
+		people[id] = p
+	}
+	for id, p := range friendByID {
+		people[id] = p
+	}
+	wanted := map[string]bool{}
+	want := func(id string) {
+		if _, ok := people[id]; !ok && validMID(id) && midKind(id) == 'u' && (b.session == nil || id != b.session.MID) {
+			wanted[id] = true
+		}
+	}
+	for _, c := range b.data.Chats {
+		if c.Kind == "direct" {
+			want(c.ID)
+		}
+		for _, m := range c.Members {
+			want(m)
+		}
+	}
+	for _, list := range b.messages {
+		for _, m := range list {
+			want(m.SenderID)
+		}
+	}
+	ids := make([]string, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) > maxResolve {
+		ids = ids[:maxResolve]
+	}
+	c := b.api()
+	for start := 0; start < len(ids); start += 100 {
+		found, err := c.GetContactsV2(ids[start:min(start+100, len(ids))])
+		if err != nil {
+			break
+		}
+		for _, wrapped := range found.Contacts {
+			p := wrapped.Contact
+			if p.Mid != "" {
+				people[p.Mid] = person{ID: p.Mid, Name: p.EffectiveDisplayName(), Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath)}
+			}
+		}
+	}
+	lookups := 0
+	for _, id := range ids {
+		if _, ok := people[id]; ok || lookups >= 20 {
+			continue
+		}
+		lookups++
+		if buddy, err := c.GetBuddyProfile(id); err == nil && buddy != nil && buddy.DisplayName != "" {
+			people[id] = person{ID: id, Name: buddy.DisplayName, Avatar: avatarURL(buddy.PicturePath), Official: true}
+		}
+	}
+	for _, id := range ids {
+		if _, ok := people[id]; !ok {
+			people[id] = person{ID: id} // negative cache: do not look up again
+		}
+	}
+	b.data.People = people
+	for i := range b.data.Chats {
+		row := &b.data.Chats[i]
+		if p, ok := people[row.ID]; ok && row.Kind == "direct" {
+			if row.Name == "" || row.Name == row.ID {
+				row.Name = p.Name
+			}
+			if row.Avatar == "" {
+				row.Avatar = p.Avatar
+			}
+		}
+	}
+	for chatID, list := range b.messages {
+		for i := range list {
+			if p, ok := people[list[i].SenderID]; ok && (list[i].SenderName == "" || list[i].SenderName == list[i].SenderID) {
+				list[i].SenderName = p.Name
+			}
+		}
+		b.messages[chatID] = list
+	}
+}
+
+// preview is the chat-list subtitle for a message, as LINE Desktop shows it:
+// media are described ("傳送了貼圖") and unsent messages say so.
+func (b *backend) preview(row chat, m message) string {
+	name := m.SenderName
+	if m.Mine {
+		name = "你"
+	} else if name == "" || name == m.SenderID {
+		name = "對方"
+	}
+	switch {
+	case m.Unsent:
+		return name + "已收回訊息"
+	case m.Kind == "sticker":
+		return name + "傳送了貼圖"
+	case m.Kind == "image":
+		return name + "傳送了照片"
+	case m.Kind == "file":
+		return name + "傳送了檔案"
+	}
+	if row.Kind != "direct" && !m.Mine && m.Kind == "text" {
+		return name + "：" + m.Text
+	}
+	return m.Text
 }
 func (b *backend) refreshSnapshot() error {
 	c := b.api()
@@ -78,7 +200,7 @@ func (b *backend) refreshSnapshot() error {
 		}
 		for _, wrapped := range found.Contacts {
 			p := wrapped.Contact
-			contacts = append(contacts, person{ID: p.Mid, Name: p.EffectiveDisplayName(), Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath)})
+			contacts = append(contacts, person{ID: p.Mid, Name: p.EffectiveDisplayName(), Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath), Friend: true})
 		}
 	}
 	sort.Slice(contacts, func(i, j int) bool { return contacts[i].Name < contacts[j].Name })
@@ -90,10 +212,11 @@ func (b *backend) refreshSnapshot() error {
 	for _, old := range b.data.Chats {
 		chats[old.ID] = old
 	}
+	// Direct chats get the friend's current name and picture; a friend without
+	// any message box is not listed as a chat (LINE Desktop only lists talks).
+	friendByID := map[string]person{}
 	for _, p := range contacts {
-		if _, ok := chats[p.ID]; !ok {
-			chats[p.ID] = chat{ID: p.ID, Name: p.Name, Avatar: p.Avatar, Kind: "direct"}
-		}
+		friendByID[p.ID] = p
 	}
 	for start := 0; start < len(groups.MemberChatMids); start += 100 {
 		found, err := c.GetChats(groups.MemberChatMids[start:min(start+100, len(groups.MemberChatMids))], true, false)
@@ -109,6 +232,10 @@ func (b *backend) refreshSnapshot() error {
 			if row.Name == "" {
 				row.Name = "群組聊天"
 			}
+			row.Muted = g.NotificationDisabled
+			favorite, _ := g.FavoriteTimestamp.Int64()
+			row.Favorite = favorite > 0
+			row.HasMessages = true
 			if g.Extra.GroupExtra != nil {
 				row.MemberCount = len(g.Extra.GroupExtra.MemberMids)
 				row.Members = groupMembers(g.Extra.GroupExtra.MemberMids)
@@ -127,6 +254,10 @@ func (b *backend) refreshSnapshot() error {
 			row := chats[box.ID]
 			row.ID = box.ID
 			row.Kind = chatKind(box.ID)
+			row.HasMessages = true
+			if p, ok := friendByID[box.ID]; ok {
+				row.Name, row.Avatar = p.Name, p.Avatar
+			}
 			if row.Name == "" {
 				row.Name = b.personName(box.ID)
 			}
@@ -136,7 +267,7 @@ func (b *backend) refreshSnapshot() error {
 				msg := b.convertMessage(&box.LastMessages[i])
 				b.rememberMessage(msg)
 				if msg.Time >= row.UpdatedAt {
-					row.LastMessage = msg.Text
+					row.LastMessage = b.preview(row, msg)
 					row.UpdatedAt = msg.Time
 				}
 			}
@@ -153,8 +284,16 @@ func (b *backend) refreshSnapshot() error {
 	}
 	b.data.Chats = make([]chat, 0, len(chats))
 	for _, row := range chats {
-		b.data.Chats = append(b.data.Chats, row)
+		if row.Kind == "direct" {
+			if p, ok := friendByID[row.ID]; ok {
+				row.Name, row.Avatar = p.Name, p.Avatar
+			}
+		}
+		if row.HasMessages || row.Kind != "direct" {
+			b.data.Chats = append(b.data.Chats, row)
+		}
 	}
+	b.resolvePeople(friendByID)
 	sort.Slice(b.data.Chats, func(i, j int) bool {
 		if b.data.Chats[i].UpdatedAt == b.data.Chats[j].UpdatedAt {
 			return b.data.Chats[i].Name < b.data.Chats[j].Name
@@ -224,6 +363,9 @@ func (b *backend) convertMessage(raw *line.Message) message {
 	if m.Mine {
 		m.Status = "sent"
 	}
+	if raw.RelatedMessageID != "" && raw.MessageRelationType == 3 {
+		m.ReplyTo = raw.RelatedMessageID
+	}
 	if b.rawMessages == nil {
 		b.rawMessages = map[string]*line.Message{}
 	}
@@ -234,7 +376,9 @@ func (b *backend) convertMessage(raw *line.Message) message {
 	if len(raw.Chunks) > 0 {
 		payload, cached := b.decryptedPayloads[raw.ID]
 		var err error
-		if !cached { payload, err = b.decryptPayload(raw) }
+		if !cached {
+			payload, err = b.decryptPayload(raw)
+		}
 		if err != nil {
 			m.Kind = "system"
 			m.Text = "無法解密此訊息。請確認 Letter Sealing 已開啟，必要時重新掃描 QR code 登入。"
@@ -253,6 +397,7 @@ func (b *backend) convertMessage(raw *line.Message) message {
 	}
 	switch raw.ContentType {
 	case 0:
+		m.Text, m.Emoji = inlineEmoji(m.Text, parseReplace(b.decryptedPayloads[raw.ID], raw.ContentMetadata["REPLACE"]))
 	case 7:
 		m.Kind = "sticker"
 		m.Text = "[貼圖]"
@@ -263,7 +408,14 @@ func (b *backend) convertMessage(raw *line.Message) message {
 		}
 	case 1:
 		m.Kind = "image"
-		m.Text = "[圖片]"
+		m.Text = "[照片]"
+		var thumb struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		}
+		if json.Unmarshal([]byte(raw.ContentMetadata["MEDIA_THUMB_INFO"]), &thumb) == nil {
+			m.Width, m.Height = thumb.Width, thumb.Height
+		}
 	case 14:
 		m.Kind = "file"
 		m.Filename = raw.ContentMetadata["FILE_NAME"]
@@ -461,6 +613,11 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 	}
 	metadata["e2eeVersion"] = strconv.Itoa(e2ee.ChunksVersion(chunks))
 	raw := &line.Message{From: b.session.MID, To: chatID, ToType: toType, ContentType: contentType, HasContent: contentType != 0, Chunks: chunks, ContentMetadata: metadata, CreatedTime: json.Number(strconv.FormatInt(time.Now().UnixMilli(), 10))}
+	if b.pendingReply != "" {
+		raw.RelatedMessageID = b.pendingReply
+		raw.MessageRelationType = 3
+		raw.RelatedMessageServiceCode = 1
+	}
 	b.sequence++
 	sent, err := b.api().SendMessage(b.sequence, raw)
 	if err != nil {
@@ -485,9 +642,40 @@ func (b *backend) sendPayload(chatID string, contentType int, metadata map[strin
 	b.decryptedPayloads[raw.ID] = payload
 	return raw, nil
 }
+
+// sendPlain sends a message without Letter Sealing, used for media when the
+// server's media flow for the chat is plain (DetermineMediaMessageFlow != 2).
+func (b *backend) sendPlain(chatID string, contentType int, metadata map[string]string) (*line.Message, error) {
+	raw := &line.Message{From: b.session.MID, To: chatID, ToType: toType(chatID), ContentType: contentType, HasContent: contentType != 0, ContentMetadata: metadata, CreatedTime: json.Number(strconv.FormatInt(time.Now().UnixMilli(), 10))}
+	b.sequence++
+	sent, err := b.api().SendMessage(b.sequence, raw)
+	if err != nil {
+		if isAuthError(err) {
+			return nil, err
+		}
+		return nil, fail("send_uncertain", "無法確認訊息是否已送出。請先重新整理聊天記錄，再決定是否重送。")
+	}
+	if sent == nil || sent.ID == "" {
+		return nil, fail("send_uncertain", "LINE 未回傳訊息編號。請先重新整理聊天記錄，再決定是否重送。")
+	}
+	raw.ID = sent.ID
+	if sent.CreatedTime != "" {
+		raw.CreatedTime = sent.CreatedTime
+	}
+	return raw, nil
+}
+
 func (b *backend) sendText(chatID, text string) (message, error) {
+	return b.sendReply(chatID, text, "")
+}
+
+// sendReply sends text, quoting replyTo when set (messageRelationType 3, as
+// upstream beeper/line does for Matrix replies).
+func (b *backend) sendReply(chatID, text, replyTo string) (message, error) {
 	payload, _ := json.Marshal(map[string]string{"text": text})
+	b.pendingReply = replyTo
 	raw, err := b.sendPayload(chatID, 0, nil, payload)
+	b.pendingReply = ""
 	if err != nil {
 		return message{}, err
 	}

@@ -1,0 +1,94 @@
+/* 螢幕顯示模式：深色. Applied when the window carries .dark (follows the
+   desktop color-scheme unless the user picks light/dark in 設定). Only
+   colours live here; layout stays in style.css. */
+.line-window.dark, .line-window.dark .line-popover { background: #1b1b1b; color: #e8e8e8; }
+.line-window.dark selection, .line-window.dark text selection { background: #2f6b3f; color: #fff; }
+.line-window.dark scrollbar slider { background: #4a4a4a; }
+.line-window.dark separator { background: #333; }
+
+.line-window.dark headerbar.titlebar { background: #1f1f1f; border-bottom-color: #2c2c2c; color: #aaa; }
+.line-window.dark headerbar.titlebar windowcontrols button { color: #bbb; }
+.line-window.dark headerbar.titlebar windowcontrols button:hover { background: #333; }
+.line-window.dark .demo-pill { background: #263229; border-color: #2f3f33; color: #9fb7a6; }
+
+.line-window.dark .app, .line-window.dark .welcome { background: #1b1b1b; }
+.line-window.dark .rail { background: #141a2a; }
+
+.line-window.dark .sidebar { background: #212121; border-right-color: #2e2e2e; }
+.line-window.dark .searchbox { background: #2d2d2d; color: #888; }
+.line-window.dark .searchbox text, .line-window.dark .searchbox entry { color: #eee; }
+.line-window.dark button.icon-btn { color: #ccc; }
+.line-window.dark button.icon-btn:hover { background: #333; color: #fff; }
+.line-window.dark button.filter, .line-window.dark button.filter.text-button { color: #bbb; border-color: #3a3a3a; }
+.line-window.dark button.filter:hover { background: #2d2d2d; }
+.line-window.dark button.filter.active, .line-window.dark button.filter.text-button.active { background: #eee; border-color: #eee; color: #111; }
+.line-window.dark button.chat-row { color: #eee; }
+.line-window.dark button.chat-row:hover { background: #2a2a2a; }
+.line-window.dark button.chat-row.active { background: #30343c; }
+.line-window.dark .unread.muted { background: #555; }
+
+.line-window.dark .chat-header { background: #1b1b1b; border-bottom-color: #2c2c2c; }
+.line-window.dark .header-divider { background: #333; }
+.line-window.dark .conversation { background: #1b1b1b; }
+.line-window.dark .conversation-search { background: #222; border-bottom-color: #2c2c2c; }
+.line-window.dark .conversation-search .searchbox { background: #2d2d2d; }
+.line-window.dark .date-divider { background: rgba(255, 255, 255, 0.12); color: #ddd; }
+.line-window.dark .bubble { background: #333; color: #eee; }
+.line-window.dark .message.own .bubble { background: #5bc35d; color: #111; }
+.line-window.dark .bubble.image-bubble, .line-window.dark .message.own .bubble.image-bubble { background: #2a2a2a; }
+.line-window.dark .bubble.sticker-bubble, .line-window.dark .message.own .bubble.sticker-bubble { background: none; }
+.line-window.dark .bubble.file-bubble, .line-window.dark .message.own .bubble.file-bubble { background: #262626; border-color: #3a3a3a; color: #eee; }
+.line-window.dark .system-notice { background: rgba(255, 255, 255, 0.08); color: #aaa; }
+.line-window.dark .drag-overlay { background: rgba(20, 40, 28, 0.93); color: #7fe0a4; }
+
+.line-window.dark .composer { background: #1f1f1f; border-top-color: #2c2c2c; }
+.line-window.dark .compose-input, .line-window.dark .compose-input text { color: #eee; }
+.line-window.dark .reply-bar { background: #2a2a2a; color: #bbb; }
+.line-window.dark .tray-thumb { background: #2a2a2a; }
+
+.line-window.dark .details, .line-window.dark .detail-tabs { background: #212121; border-color: #2e2e2e; }
+.line-window.dark .quick-action.on .quick-circle { background: #1f3a29; border-color: #2c5039; }
+.line-window.dark .note-card { background: #262626; border-color: #333; }
+.line-window.dark .media-cell { background: #2a2a2a; }
+
+.line-window.dark button.secondary, .line-window.dark button.secondary.text-button { background: #2d2d2d; color: #ccc; }
+.line-window.dark button.secondary:hover { background: #383838; }
+.line-window.dark .modal-overlay { background: rgba(0, 0, 0, 0.55); }
+.line-window.dark .modal { background: #262626; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5); }
+.line-window.dark .field entry, .line-window.dark .field textview, .line-window.dark .field textview > text { background: #1f1f1f; border-color: #3a3a3a; color: #eee; }
+.line-window.dark switch { background: #444; }
+.line-window.dark switch:checked { background: #06b35d; }
+.line-window.dark .profile-modal .modal-head, .line-window.dark .profile-cover { background: #2f3a46; }
+.line-window.dark .profile-photo { border-color: #262626; }
+.line-window.dark .profile-status, .line-window.dark .profile-action-label { color: #aaa; }
+.line-window.dark .profile-action-icon { background: #333; color: #eee; }
+.line-window.dark button.contact-choice { color: #eee; }
+.line-window.dark button.contact-choice:hover { background: #2f2f2f; }
+.line-window.dark .help-block { border-bottom-color: #333; }
+
+.line-window.dark popover.line-popover > contents { background: #262626; border-color: #383838; box-shadow: 0 8px 35px rgba(0, 0, 0, 0.45); }
+.line-window.dark .line-popover button { color: #ccc; }
+.line-window.dark .line-popover button:hover { background: #333; }
+.line-window.dark .sticker-heading { border-bottom-color: #333; }
+.line-window.dark .line-popover button.sticker-kind.active, .line-window.dark .line-popover button.sticker-kind.active.text-button { color: #fff; border-bottom-color: #fff; }
+.line-window.dark .sticker-strip { background: #222; border-top-color: #333; }
+.line-window.dark .line-popover button.sticker-pack.active { background: #3a3a3a; }
+.line-window.dark .line-popover button.sticker-tile:hover, .line-window.dark .line-popover button.emoji:hover { background: #333; }
+
+.line-window.dark .login { background: #1b1b1b; }
+.line-window.dark .login-card { background: #262626; border-color: #333; }
+.line-window.dark .login-art { background: #222; border-right-color: #333; }
+.line-window.dark .qr-box { background: #fff; }
+
+/* Primary text colours that style.css pins to near-black. */
+.line-window.dark .side-title, .line-window.dark .chat-name, .line-window.dark .chat-title,
+.line-window.dark .profile-name, .line-window.dark .modal-title, .line-window.dark .help-title,
+.line-window.dark .detail-name, .line-window.dark .compose-input, .line-window.dark .compose-input text,
+.line-window.dark .field entry > text { color: #eee; }
+.line-window.dark .header-actions button.icon-btn { color: #ccc; }
+.line-window.dark .chat-preview { color: #999; }
+.line-window.dark .message-sender { color: #aaa; }
+.line-window.dark .message.own .bubble label { color: #111; }
+.line-window.dark .field dropdown > button { background: #1f1f1f; border-color: #3a3a3a; color: #eee; }
+.line-window.dark .toggle-line { border-bottom-color: #333; color: #bbb; }
+.line-window.dark .field-label { color: #999; }

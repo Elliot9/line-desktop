@@ -135,7 +135,9 @@ func refreshTime(token *line.TokenV3IssueResult) int64 {
 }
 func (b *backend) beginLogin(method, email, password string) {
 	previous := b.session
-	if previous == nil { previous = b.previousSession }
+	if previous == nil {
+		previous = b.previousSession
+	}
 	b.stop()
 	b.clearData()
 	b.sessionEvent("connecting", "正在連線至 LINE…")
@@ -408,11 +410,29 @@ func (b *backend) handleEvent(ev workerEvent) {
 			b.session.Revision = rev
 		}
 	}
+	b.preservePhoneNotifications()
+	b.pushPreserved = true
 	if err := b.refreshSnapshot(); err != nil {
 		b.notice("登入成功，但聊天清單暫時無法同步。請稍後重新整理。")
 	}
 	b.sessionEvent("ready", "已連線至 LINE。")
 	b.startStream()
+}
+
+// preservePhoneNotifications keeps push notifications on the user's phone
+// while this desktop session is connected. LINE silences the primary device
+// when a secondary (Chrome) client logs in unless notificationDisabledWithSub
+// is explicitly false; upstream beeper/line does the same on connect. It is
+// best effort: a failure must not block an otherwise healthy session.
+func (b *backend) preservePhoneNotifications() {
+	if b.demo || b.session == nil {
+		return
+	}
+	disabled := false
+	b.sequence++
+	if err := b.api().UpdateSettingsAttributes2Context(b.ctx, b.sequence, []int{line.SettingsAttributeNotificationDisabledWithSub}, line.Settings{NotificationDisabledWithSub: &disabled}); err != nil && !isAuthError(err) {
+		b.notice("無法確認手機推播設定；若手機收不到 LINE 通知，請重新登入。")
+	}
 }
 func (b *backend) saveSession() {
 	if b.session == nil {

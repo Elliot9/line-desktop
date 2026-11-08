@@ -4,10 +4,12 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk, Pango
 
 from .art import Art, portrait_index
+from .avatar import Avatar
 from .model import KEEP_ID
 
 H = Gtk.Orientation.HORIZONTAL
 V = Gtk.Orientation.VERTICAL
+PEOPLE = None  # set by the app: person id -> profile picture URL
 DEMO_PORTRAITS = {"demo-me": 0, "demo-yiting": 1, "demo-hao": 2, "demo-momo": 3, "demo-jia": 4, "demo-kai": 5}
 
 
@@ -118,34 +120,49 @@ def portrait_for(person_id, own_id=""):
 
 
 def avatar(kind, value=None, size=43, radius=16):
-    """kind: person | group | keep. Rounded with the index.html radius."""
+    """kind: person | group | keep. Always a circle, like LINE."""
     if kind == "keep":
-        frame = box(css=f"avatar keep r{radius}", halign=Gtk.Align.START, valign=Gtk.Align.START)
+        frame = box(css="avatar keep round", halign=Gtk.Align.START, valign=Gtk.Align.START)
         frame.set_size_request(size, size)
-        mark = icon("bookmark", 31 if size >= 60 else 22)
+        mark = icon("bookmark", 31 if size >= 60 else max(14, size // 2))
         mark.set_halign(Gtk.Align.CENTER)
         mark.set_valign(Gtk.Align.CENTER)
         mark.set_vexpand(True)
         frame.append(mark)
         return frame
-    art = Art("group", None, size, size, f"avatar group r{radius}") if kind == "group" else Art("portrait", value, size, size, f"avatar r{radius}")
-    art.set_halign(Gtk.Align.START)
-    art.set_valign(Gtk.Align.START)
-    return art
+    if kind == "group":
+        return Avatar([("default", None)], size, "group")
+    return Avatar([("art", value)] if value is not None else [("default", None)], size)
+
+
+def person_source(person_id, own_id=""):
+    person_id = str(person_id or "")
+    url = PEOPLE(person_id) if PEOPLE else ""
+    if url:
+        return ("url", url)
+    if person_id in DEMO_PORTRAITS:
+        return ("art", DEMO_PORTRAITS[person_id])
+    return ("default", None)
 
 
 def chat_avatar(chat, own_id="", size=43, radius=16):
     if not chat:
-        return avatar("person", 0, size, radius)
+        return avatar("person", None, size)
     if chat.get("id") == KEEP_ID:
-        return avatar("keep", None, size, radius)
+        return avatar("keep", None, size)
+    if chat.get("avatar"):
+        return Avatar([("url", chat["avatar"])], size)
     if chat.get("kind") in ("group", "room"):
-        return avatar("group", None, size, radius)
-    return avatar("person", portrait_for(chat.get("id"), own_id), size, radius)
+        # LINE tiles up to four members when a group has no picture.
+        members = [m for m in chat.get("members", []) if m and m != own_id][:4]
+        if members:
+            return Avatar([person_source(m, own_id) for m in members], size, "group")
+        return avatar("group", None, size)
+    return Avatar([person_source(chat.get("id"), own_id)], size)
 
 
 def person_avatar(person_id, own_id="", size=43, radius=16):
-    return avatar("person", portrait_for(person_id, own_id), size, radius)
+    return Avatar([person_source(person_id, own_id)], size)
 
 
 def file_badge(name, small=False):

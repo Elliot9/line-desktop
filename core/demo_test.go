@@ -43,8 +43,16 @@ func TestDemoSeedMatchesReferenceDesign(t *testing.T) {
 		t.Fatal("demo profile or chats differ from index.html")
 	}
 	weekend := b.data.Chats[0]
-	if weekend.ID != "demo-weekend" || weekend.MemberCount != 4 || weekend.LastMessage != "林子豪：[貼圖]" {
+	if weekend.ID != "demo-weekend" || weekend.MemberCount != 5 || weekend.LastMessage != "林子豪：[貼圖]" || !weekend.HasMessages || len(weekend.ReadBy) != 3 {
 		t.Fatalf("unexpected weekend chat %+v", weekend)
+	}
+	var stranger, reply bool
+	for _, m := range b.messages["demo-weekend"] {
+		stranger = stranger || (m.SenderID == "demo-lee" && m.SenderName == "李小薇")
+		reply = reply || m.ReplyTo == "demo-0-2"
+	}
+	if !stranger || !reply {
+		t.Fatal("demo lacks a non-friend sender name or a reply")
 	}
 	kinds := map[string]bool{}
 	for _, m := range b.messages["demo-weekend"] {

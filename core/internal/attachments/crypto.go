@@ -37,6 +37,14 @@ func encryptBinaryWithKey(plain, key []byte) ([]byte, string, error) {
 	return ciphertext, base64.StdEncoding.EncodeToString(key), nil
 }
 
+func decodeKey(keyMaterial string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(keyMaterial)
+	if err != nil || len(key) != 32 {
+		return nil, ErrAuthentication
+	}
+	return key, nil
+}
+
 func DecryptBinary(ciphertext []byte, keyMaterial string) ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(keyMaterial)
 	if err != nil || len(key) != 32 || len(ciphertext) < sha256.Size {
