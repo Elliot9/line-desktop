@@ -69,9 +69,11 @@ type message struct {
 	Status     string `json:"status"`
 	Filename   string `json:"filename,omitempty"`
 	Size       int64  `json:"size,omitempty"`
-	URL        string `json:"url,omitempty"`
-	StickerID  string `json:"sticker_id,omitempty"`
-	PackageID  string `json:"package_id,omitempty"`
+	// Expires is when LINE deletes a file (ms), if LINE says.
+	Expires   int64  `json:"expires,omitempty"`
+	URL       string `json:"url,omitempty"`
+	StickerID string `json:"sticker_id,omitempty"`
+	PackageID string `json:"package_id,omitempty"`
 	// Image messages: Width/Height come from MEDIA_THUMB_INFO when present.
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`

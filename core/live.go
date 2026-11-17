@@ -375,8 +375,14 @@ func (b *backend) refreshSnapshot() error {
 		}
 		minID = next
 	}
+	// Read times are facts that a new list of chats does not carry.
+	readBy := map[string]map[string]int64{}
+	for _, c := range b.data.Chats {
+		readBy[c.ID] = c.ReadBy
+	}
 	b.data.Chats = make([]chat, 0, len(chats))
 	for _, row := range chats {
+		row.ReadBy = readBy[row.ID]
 		if row.Kind == "direct" {
 			if p, ok := friendByID[row.ID]; ok {
 				row.Name, row.Avatar = p.Name, p.Avatar
@@ -485,6 +491,10 @@ func (b *backend) convertMessage(raw *line.Message) message {
 		b.decryptedPayloads[raw.ID] = payload
 		var parsed struct {
 			Text string `json:"text"`
+			// Letter Sealing files: the name travels inside the encrypted
+			// payload, LINE's own apps do not repeat it in the metadata.
+			FileName string `json:"fileName"`
+			FileSize any    `json:"fileSize"`
 		}
 		if err = json.Unmarshal(payload, &parsed); err != nil {
 			m.Kind = "system"
@@ -492,6 +502,7 @@ func (b *backend) convertMessage(raw *line.Message) message {
 			return m
 		}
 		m.Text = parsed.Text
+		m.Filename, m.Size = parsed.FileName, int64Value(parsed.FileSize)
 	}
 	switch raw.ContentType {
 	case 0:
@@ -516,8 +527,13 @@ func (b *backend) convertMessage(raw *line.Message) message {
 		}
 	case 14:
 		m.Kind = "file"
-		m.Filename = raw.ContentMetadata["FILE_NAME"]
-		m.Size, _ = strconv.ParseInt(raw.ContentMetadata["FILE_SIZE"], 10, 64)
+		if name := raw.ContentMetadata["FILE_NAME"]; name != "" {
+			m.Filename = name
+		}
+		if size, err := strconv.ParseInt(raw.ContentMetadata["FILE_SIZE"], 10, 64); err == nil && size > 0 {
+			m.Size = size
+		}
+		m.Expires = int64Value(raw.ContentMetadata["FILE_EXPIRE_TIMESTAMP"])
 		m.Text = "[檔案] " + m.Filename
 	case 2:
 		m.Kind = "system"

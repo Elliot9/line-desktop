@@ -1,7 +1,10 @@
 /* 螢幕顯示模式：深色. Applied when the window carries .dark (follows the
    desktop color-scheme unless the user picks light/dark in 設定). Only
    colours live here; layout stays in style.css. */
-.line-window.dark, .line-window.dark .line-popover { background: #1b1b1b; color: #e8e8e8; }
+.line-window.dark { background: #1b1b1b; color: #e8e8e8; }
+/* Only the text colour: a background on the popover node itself fills the
+   margin GTK leaves for the shadow, a dark frame around every menu. */
+.line-window.dark .line-popover { color: #e8e8e8; }
 .line-window.dark selection, .line-window.dark text selection { background: #2f6b3f; color: #fff; }
 .line-window.dark scrollbar slider { background: #4a4a4a; }
 .line-window.dark separator { background: #333; }
@@ -66,9 +69,18 @@
 .line-window.dark button.contact-choice:hover { background: #2f2f2f; }
 .line-window.dark .help-block { border-bottom-color: #333; }
 
-.line-window.dark popover.line-popover > contents { background: #262626; border-color: #383838; box-shadow: 0 8px 35px rgba(0, 0, 0, 0.45); }
-.line-window.dark .line-popover button { color: #ccc; }
+.line-window.dark popover.line-popover > contents { background: #262626; border-color: #383838; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
+.line-window.dark .line-popover button { color: #dcdcdc; }
 .line-window.dark .line-popover button:hover { background: #333; }
+.line-window.dark .line-popover.menu-list button, .line-window.dark .line-popover.menu-list button.text-button { color: #dcdcdc; }
+.line-window.dark .line-popover.menu-list button.danger { color: #f08a80; }
+.line-window.dark .line-popover.menu-list button:focus-visible { background: #333; }
+.line-window.dark .line-popover button.danger { color: #f08a80; }
+.line-window.dark popover.menu > contents { background: #262626; border-color: #383838; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
+.line-window.dark popover.menu modelbutton { color: #dcdcdc; }
+.line-window.dark popover.menu modelbutton:hover { background: #333; }
+.line-window.dark popover.menu modelbutton:disabled { color: #6a6a6a; }
+.line-window.dark popover.menu modelbutton accelerator { color: #8a8a8a; }
 .line-window.dark .sticker-header { border-bottom-color: #333; }
 .line-window.dark .sticker-packs-area { background: #161616; }
 .line-window.dark .line-popover button.sticker-pack:hover { background: #2a2a2a; }
@@ -101,6 +113,8 @@
 .line-window.dark .chat-preview { color: #999; }
 .line-window.dark .message-sender { color: #aaa; }
 .line-window.dark .message.own .bubble label { color: #111; }
+.line-window.dark .bubble link, .line-window.dark .emoji-text link { color: #7db4ff; }
+.line-window.dark .message.own .bubble link { color: #0b4fae; }
 .line-window.dark .field dropdown > button { background: #1f1f1f; border-color: #3a3a3a; color: #eee; }
 .line-window.dark .toggle-line { border-bottom-color: #333; color: #bbb; }
 .line-window.dark .field-label { color: #999; }

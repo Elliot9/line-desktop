@@ -210,6 +210,36 @@ def check_state():
     print("PASS a locally opened chat is kept while it is selected")
 
 
+def check_launcher():
+    from desktop import launcher
+    entries = launcher.entries(Path("/opt/line desktop"))
+    live = entries[launcher.LIVE_ID]
+    assert "Actions=quit;\n" in live and "Name=結束 LINE\n" in live and live.rstrip().endswith('Exec="/opt/line desktop/line-app" --quit')
+    assert "離線展示" not in live and "--demo" not in live
+    assert "NoDisplay=true" in entries[launcher.DEMO_ID]
+    print("PASS the dock menu offers 結束 LINE and no 離線展示")
+
+    previous = os.environ.get("XDG_DATA_HOME")
+    with tempfile.TemporaryDirectory() as data:
+        os.environ["XDG_DATA_HOME"] = data
+        try:
+            root = Path(__file__).resolve().parents[1]
+            assert not launcher.refresh(root)  # nothing installed: nothing written
+            installed = launcher.install(root)
+            assert not launcher.refresh(root)  # already current
+            installed.write_text(installed.read_text().replace("Actions=quit;", "Actions=demo;"))
+            assert launcher.refresh(root) and installed.read_text() == launcher.entries(root)[launcher.LIVE_ID]
+            elsewhere = launcher.entries(Path("/elsewhere"))[launcher.LIVE_ID]
+            installed.write_text(elsewhere)
+            assert not launcher.refresh(root) and installed.read_text() == elsewhere
+        finally:
+            if previous is None:
+                os.environ.pop("XDG_DATA_HOME", None)
+            else:
+                os.environ["XDG_DATA_HOME"] = previous
+    print("PASS an outdated launcher from this folder is refreshed; others are left alone")
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         fake = Path(directory) / "fake-core"
@@ -217,3 +247,4 @@ if __name__ == "__main__":
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
         check_transport(str(fake))
     check_state()
+    check_launcher()
