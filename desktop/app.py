@@ -1,5 +1,6 @@
 """Native GTK 4 LINE client whose layout mirrors index.html element by element."""
 import base64
+import collections
 import datetime
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ from . import ui as ui_module
 from .art import Art, BASIC_EMOJI, MOODS
 from .ipc import Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
+from .photos import Photos
 from .pictures import Pictures
 from .ui import (H, V, Responsive, box, button, chat_avatar, clear, dot, file_badge, file_size,
                  icon, icon_button, icon_text, label, person_avatar, scroller, set_accessible_label)
@@ -27,6 +29,16 @@ LOGIN_ROUTINE = {"請使用手機 LINE 掃描 QR code 登入。", "已取消登�
 WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 MAX_FILE = 25 * 1024 * 1024
 MAX_QUEUE = 20
+# Redraws caused by core events are at least this many seconds apart (and
+# further apart when a redraw itself is slow), however many events arrive.
+RENDER_GAP = 0.08
+# Rows built at once for the sidebar list; the rest are built on scroll.
+LIST_PAGE = 60
+# Messages built at once for the open conversation; earlier ones on request.
+HISTORY_PAGE = 150
+# Notifications allowed per NOTIFY_WINDOW seconds; beyond that, one summary.
+NOTIFY_BURST = 4
+NOTIFY_WINDOW = 5.0
 CENTER = Gtk.Align.CENTER
 START = Gtk.Align.START
 END = Gtk.Align.END
@@ -129,8 +141,26 @@ class Application(Gtk.Application):
         self.recent_stickers = [] if self.options.demo else list(self.prefs.settings["recent_stickers"])
         self.snap_pending = False
         self.pending_images = []
-        self.image_textures = {}
-        self.image_bytes = {}
+        self.photos = Photos(self.dispatch)
+        self.render_pending = set()
+        self.render_timer = 0
+        self.render_ready_at = 0.0
+        self.list_rows = None
+        self.list_built = 0
+        self.list_key = None
+        self.list_extending = False
+        self.history_limit = HISTORY_PAGE
+        self.rendered = None
+        self.notify_times = collections.deque()
+        self.summary_count = 0
+        self.summary_shown = 0
+        self.summary_timer = 0
+        self.read_marks = {}
+        self.sticker_textures = {}
+        self.sticker_waiting = {}
+        self.context_menus = {}
+        self.reload_due = False
+        self.temp_images = set()
         self.replying = None
         self.screenshot_signal = 0
         self.context_popover = None
@@ -219,6 +249,7 @@ class Application(Gtk.Application):
         self.pages.set_visible_child_name("login")
         self.show_restoring(not self.options.demo)
         self.window.present()
+        self.sweep_outgoing()
         try:
             self.core = Core(self.options.demo, self.dispatch, self.on_event)
             self.core.request("initialize", callback=self.initialized)
@@ -554,6 +585,9 @@ class Application(Gtk.Application):
         self.sidebar.append(top)
         self.chat_list = box(V, 0)
         self.list_scroll = scroller(self.chat_list)
+        adjustment = self.list_scroll.get_vadjustment()
+        adjustment.connect("value-changed", self.list_scrolled)
+        adjustment.connect("changed", self.list_scrolled)
         self.sidebar.append(self.list_scroll)
         footer = box(H, 6, "side-footer")
         self.footer = footer
@@ -834,8 +868,8 @@ class Application(Gtk.Application):
         query = self.search.get_text().casefold().strip()
         rows = []
         for chat in self.state.chats.values():
-            names = [str(chat.get("name", ""))] + [self.state.name_of(member) for member in chat.get("members") or []]
-            if query and not any(query in name.casefold() for name in names):
+            if query and query not in str(chat.get("name", "")).casefold() \
+                    and not any(query in self.state.name_of(member).casefold() for member in chat.get("members") or []):
                 continue
             if self.filter == "unread" and not chat.get("unread"):
                 continue
@@ -851,22 +885,67 @@ class Application(Gtk.Application):
         return rows
 
     def render_list(self):
+        """Rebuilds the sidebar list, building only the rows near the top.
+        With several hundred chats or friends a full rebuild takes well over
+        100 ms, and the list is rebuilt whenever anything in it changes; the
+        remaining rows are built when the user scrolls towards them."""
+        key = (self.section, self.filter, self.search.get_text())
+        # The same list redrawn keeps as many rows as it had, so it does not
+        # jump back up under a user who has scrolled down.
+        same = key == self.list_key
+        count = max(LIST_PAGE, self.list_built) if same else LIST_PAGE
+        self.list_key = key
         clear(self.chat_list)
-        if self.section == "friends":
-            self.render_friend_list()
+        self.list_built = 0
+        self.list_rows = self.friend_rows() if self.section == "friends" else self.chat_rows()
+        self.extend_list(count)
+        adjustment = self.list_scroll.get_vadjustment()
+        if not same:
+            adjustment.set_value(0)  # another list starts at its top
+        elif adjustment.get_page_size() > 0:
+            # The rebuilt list may be exactly as tall as before, in which
+            # case no scroll signal follows: check for more rows now.
+            self.list_scrolled(adjustment)
+
+    def extend_list(self, count=LIST_PAGE):
+        rows = self.list_rows
+        if rows is None:
             return
+        for _ in range(count):
+            widget = next(rows, None)
+            if widget is None:
+                self.list_rows = None
+                return
+            self.chat_list.append(widget)
+            self.list_built += 1
+
+    def list_scrolled(self, adjustment):
+        if self.list_rows is None or self.list_extending:
+            return
+        if adjustment.get_value() + adjustment.get_page_size() >= adjustment.get_upper() - 600:
+            # "changed" fires during size allocation, where children cannot
+            # be added; build the next rows right after it.
+            self.list_extending = True
+            GLib.idle_add(self.list_extend)
+
+    def list_extend(self):
+        self.list_extending = False
+        self.extend_list()
+        return GLib.SOURCE_REMOVE
+
+    def chat_rows(self):
         rows = self.visible_chats()
         rows.sort(key=lambda chat: (not self.prefs.has("pinned", chat["id"]), chat["id"] == KEEP_ID, -int(chat.get("updated_at", 0) or 0)))
         for chat in rows:
-            self.chat_list.append(self.chat_row(chat))
+            yield self.chat_row(chat)
         if not rows:
-            self.chat_list.append(label("沒有聊天" if not self.search.get_text() else "找不到符合的聊天", "empty", xalign=0.5))
+            yield label("沒有聊天" if not self.search.get_text() else "找不到符合的聊天", "empty", xalign=0.5)
 
-    def render_friend_list(self):
+    def friend_rows(self):
         query = self.search.get_text().casefold().strip()
         own = self.state.profile
         if not query and own:
-            self.chat_list.append(self.friend_row(own, profile=True))
+            yield self.friend_row(own, profile=True)
         contacts = self.visible_friends()
         # Like the phone app, official accounts get their own section and do
         # not count as friends.
@@ -882,12 +961,12 @@ class Application(Gtk.Application):
             if not rows:
                 continue
             collapsed = key in self.collapsed and not query
-            self.chat_list.append(self.section_header(key, title, len(rows), collapsed))
+            yield self.section_header(key, title, len(rows), collapsed)
             if not collapsed:
                 for row in rows:
-                    self.chat_list.append(builder(row))
+                    yield builder(row)
         if not contacts and not groups:
-            self.chat_list.append(label("找不到符合的好友" if query else "還沒有好友", "empty", xalign=0.5))
+            yield label("找不到符合的好友" if query else "還沒有好友", "empty", xalign=0.5)
 
     def section_header(self, key, title, count, collapsed):
         contents = box(H, 6)
@@ -1038,30 +1117,53 @@ class Application(Gtk.Application):
 
     def attach_context(self, widget, options):
         """Right click (or long press on touch) shows a LINE-style menu."""
-        def show(x, y):
+        # The handlers take the widget from the gesture instead of holding
+        # it. A handler that refers to the widget whose own gesture keeps the
+        # handler alive is a cycle Python cannot collect: every chat row and
+        # message bubble ever built then stays in memory.
+        def show(gesture, x, y):
+            target = gesture.get_widget()
             entries = options()
-            if not entries:
+            if not entries or target is None:
                 return
+            # Menus whose row left the window without the menu closing.
+            for stale, owner in list(self.context_menus.items()):
+                if owner.get_root() is None:
+                    self.detach_menu(stale)
             popover = Gtk.Popover(has_arrow=False)
             popover.add_css_class("line-popover")
             contents = box(V, 0)
             for glyph, title, callback in entries:
-                contents.append(button(icon_text(glyph, title, 14, 9), lambda action=callback: (popover.popdown(), action()), "danger" if glyph == "trash" else None))
+                item = button(icon_text(glyph, title, 14, 9), None, "danger" if glyph == "trash" else None)
+                item.connect("clicked", lambda source, action=callback: (source.get_ancestor(Gtk.Popover).popdown(), action()))
+                contents.append(item)
             popover.set_child(contents)
-            popover.set_parent(widget)
+            popover.set_parent(target)
             rect = Gdk.Rectangle()
             rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
             popover.set_pointing_to(rect)
             popover.set_position(Gtk.PositionType.BOTTOM)
-            popover.connect("closed", lambda *_: GLib.idle_add(lambda: popover.unparent() if popover.get_parent() else None))
+            # The row must outlive its menu: choosing an item usually redraws
+            # the list, and a row freed with the menu still attached crashes
+            # GTK. The reference is held here, not by the row's own handlers,
+            # and is dropped as soon as the menu is detached.
+            self.context_menus[popover] = target
+            popover.connect("closed", lambda source: GLib.idle_add(self.detach_menu, source))
             self.context_popover = popover
             popover.popup()
         click = Gtk.GestureClick(button=3)
-        click.connect("pressed", lambda gesture, n, x, y: show(x, y))
+        click.connect("pressed", lambda gesture, n, x, y: show(gesture, x, y))
         widget.add_controller(click)
         press = Gtk.GestureLongPress(touch_only=True)
-        press.connect("pressed", lambda gesture, x, y: show(x, y))
+        press.connect("pressed", lambda gesture, x, y: show(gesture, x, y))
         widget.add_controller(press)
+
+    def detach_menu(self, popover):
+        owner = self.context_menus.pop(popover, None)  # alive until unparented
+        if popover.get_parent() is not None:
+            popover.unparent()
+        del owner
+        return GLib.SOURCE_REMOVE
 
     # --------------------------------------------------------------- chat view
     def select_chat(self, chat_id):
@@ -1074,8 +1176,10 @@ class Application(Gtk.Application):
             self.section = "chats"
         self.state.selected = chat_id
         chat = self.state.chats[chat_id]
+        unread = int(chat.get("unread") or 0)
         chat["unread"] = 0
         self.detail_tab = "info"
+        self.history_limit = HISTORY_PAGE
         self.close_search()
         if getattr(self, "tray", None) is not None:
             self.clear_tray()
@@ -1088,7 +1192,14 @@ class Application(Gtk.Application):
         self.render_messages()
         self.render_details()
         self.update_send()
-        if chat_id == KEEP_ID:
+        # Enough history to cover what is unread (LINE serves 100 at most).
+        self.load_history(chat_id, min(100, max(50, unread + 20)))
+
+    def load_history(self, chat_id, limit=50, replace=False):
+        """Asks the core for the chat's recent messages and shows them.
+        replace discards what is held for the chat first (after a resync it
+        may include messages that were retracted meanwhile)."""
+        if not chat_id or chat_id == KEEP_ID or not self.core:
             return
         generation = self.generation
 
@@ -1096,22 +1207,32 @@ class Application(Gtk.Application):
             if generation != self.generation:
                 return
             if response.get("ok"):
+                if replace:
+                    self.state.messages[chat_id] = [m for m in self.state.messages.get(chat_id, []) if str(m.get("id", "")).startswith("pending-")]
                 for message in response.get("result", {}).get("messages", []):
-                    self.state.add_message(message)
+                    # History is not news: unread counts come from the core.
+                    self.state.add_message(message, count=False)
                 if self.state.selected == chat_id:
-                    self.state.chats.get(chat_id, {})["unread"] = 0
+                    if chat_id in self.state.chats:
+                        self.state.chats[chat_id]["unread"] = 0
                     self.render_messages()
                     self.render_details()
                     self.mark_read()
             else:
                 self.toast(self.error(response), True)
-        if self.core:
-            self.core.request("messages.list", {"chat_id": chat_id, "limit": 50}, loaded)
+        self.core.request("messages.list", {"chat_id": chat_id, "limit": limit}, loaded)
+
+    def reload_open_chat(self):
+        """Loads the open conversation again once the core accepts requests."""
+        if self.reload_due and self.state.session == "ready":
+            self.reload_due = False
+            if self.state.selected and self.state.selected in self.state.chats:
+                self.load_history(self.state.selected, replace=True)
 
     def ensure_direct(self, contact_id):
         contact = self.state.contacts.get(contact_id)
         if contact and contact_id not in self.state.chats:
-            self.state.chats[contact_id] = {"id": contact_id, "name": contact.get("name", "好友"), "kind": "direct", "last_message": "", "unread": 0, "updated_at": 0}
+            self.state.chats[contact_id] = {"id": contact_id, "name": contact.get("name", "好友"), "kind": "direct", "last_message": "", "unread": 0, "updated_at": 0, "local": True}
         return contact_id if contact_id in self.state.chats else None
 
     def current_chat(self):
@@ -1158,41 +1279,141 @@ class Application(Gtk.Application):
     def history_for(self, chat_id):
         return self.state.messages.get(chat_id, [])
 
-    def render_messages(self):
+    def render_messages(self, anchor=None):
+        """Rebuilds the open conversation. anchor is a message id to keep in
+        view instead of jumping to the newest message."""
         clear(self.history)
+        self.rendered = None
         chat = self.current_chat()
         history = self.history_for(self.state.selected) if chat else []
         query = self.message_search.casefold()
+        # Only the newest messages are built unless a search needs them all:
+        # the conversation is rebuilt on every change, and building a long
+        # one takes a noticeable fraction of a second.
+        hidden = 0 if query else max(0, len(history) - self.history_limit)
+        shown = history[hidden:]
         matches = 0
-        first_hit = None
+        target = None
         by_id = {m.get("id"): m for m in history}
         if not history:
             self.history.append(label("沒有訊息" if chat else "", "empty", xalign=0.5))
-        day = None
-        previous = None
-        for message in history:
-            moment = day_label(message.get("time", 0))
-            if moment != day:
-                day = moment
-                previous = None
-                self.history.append(self.date_divider(moment))
-            hit = bool(query and query in str(message.get("text", "")).casefold())
+        if hidden:
+            earlier = button(None, self.show_earlier, "history-more", text=f"顯示較早的 {min(hidden, HISTORY_PAGE)} 則訊息")
+            earlier.set_halign(CENTER)
+            self.history.append(earlier)
+        flow = {"day": None, "previous": None}
+        for message in shown:
+            row, bubble, hit = self.add_message_row(message, chat, by_id, query, flow)
             matches += hit
-            # LINE groups consecutive messages by one sender within a minute
-            # or so: only the first shows the avatar and name.
-            grouped = bool(previous and previous.get("kind") != "system" and message.get("kind") != "system"
-                           and previous.get("mine") == message.get("mine") and previous.get("sender_id") == message.get("sender_id")
-                           and abs(int(message.get("time", 0)) - int(previous.get("time", 0))) < 5 * 60 * 1000)
-            row, bubble = self.message_widget(message, chat, hit, grouped, by_id)
-            if hit and first_hit is None:
-                first_hit = bubble
-            self.history.append(row)
-            previous = message
+            if (hit and target is None and anchor is None) or (anchor is not None and message.get("id") == anchor):
+                target = bubble
         self.search_count.set_text(f"{matches} 則結果" if self.message_search else "")
-        if first_hit is not None:
-            GLib.idle_add(self.scroll_to, first_hit)
+        if chat and not query:
+            # What is on screen, so later messages can simply be appended.
+            self.rendered = {"chat": chat["id"], "hidden": hidden, "ids": [m.get("id") for m in shown], "flow": flow}
+        if target is not None:
+            self.stick_bottom = False
+            GLib.idle_add(self.scroll_to, target)
         else:
             GLib.idle_add(self.scroll_bottom)
+
+    def add_message_row(self, message, chat, by_id, query, flow):
+        """Appends one message; flow carries the day and the previous message
+        from one row to the next. Returns (row, bubble, matches the search)."""
+        moment = day_label(message.get("time", 0))
+        if moment != flow["day"]:
+            flow["day"] = moment
+            flow["previous"] = None
+            self.history.append(self.date_divider(moment))
+        previous = flow["previous"]
+        hit = bool(query and query in str(message.get("text", "")).casefold())
+        # LINE groups consecutive messages by one sender within a minute
+        # or so: only the first shows the avatar and name.
+        grouped = bool(previous and previous.get("kind") != "system" and message.get("kind") != "system"
+                       and previous.get("mine") == message.get("mine") and previous.get("sender_id") == message.get("sender_id")
+                       and abs(int(message.get("time", 0)) - int(previous.get("time", 0))) < 5 * 60 * 1000)
+        row, bubble = self.message_widget(message, chat, hit, grouped, by_id)
+        self.history.append(row)
+        flow["previous"] = message
+        return row, bubble, hit
+
+    def append_messages(self):
+        """Adds messages that arrived at the end of the open conversation to
+        what is already on screen. Returns False when that is not possible
+        (something other than the tail changed) and a rebuild is needed."""
+        done = self.rendered
+        chat = self.current_chat()
+        if not done or not chat or done["chat"] != chat["id"] or self.message_search:
+            return False
+        history = self.history_for(chat["id"])
+        shown = history[done["hidden"]:]
+        ids = done["ids"]
+        if not ids or len(shown) < len(ids) or [m.get("id") for m in shown[:len(ids)]] != ids:
+            return False
+        fresh = shown[len(ids):]
+        if len(shown) > 2 * self.history_limit:
+            return False  # a rebuild trims the conversation back to one page
+        previous = done["flow"]["previous"]
+        if previous is not None and day_label(previous.get("time", 0)) != done["flow"]["day"]:
+            return False  # midnight passed: the 今天 / 昨天 labels on screen are stale
+        by_id = {m.get("id"): m for m in history}
+        for message in fresh:
+            self.add_message_row(message, chat, by_id, "", done["flow"])
+            ids.append(message.get("id"))
+        if fresh and self.stick_bottom:
+            GLib.idle_add(self.scroll_bottom)
+        return True
+
+    def show_earlier(self):
+        history = self.history_for(self.state.selected)
+        # From what is on screen (messages appended since the last rebuild
+        # are not counted in history_limit).
+        hidden = self.rendered["hidden"] if self.rendered else max(0, len(history) - self.history_limit)
+        anchor = history[hidden].get("id") if hidden < len(history) else None
+        self.history_limit = len(history) - hidden + HISTORY_PAGE
+        self.render_messages(anchor=anchor)
+
+    # ------------------------------------------------------ coalesced redraw
+    def queue_render(self, *parts):
+        """Redraws parts of the window in response to core events: "list",
+        "sidebar", "rail", "header", "messages" (rebuild the conversation),
+        "append" (new messages at its end) and "details".
+
+        A single event is drawn at once. During a burst the parts are drawn
+        together, at most once per RENDER_GAP: redrawing the chat list for
+        every message of a burst is what used to freeze the window."""
+        self.render_pending.update(parts)
+        if self.render_timer:
+            return
+        wait = self.render_ready_at - time.monotonic()
+        if wait <= 0:
+            self.flush_render()
+        else:
+            self.render_timer = GLib.timeout_add(int(wait * 1000) + 1, self.flush_render)
+
+    def flush_render(self):
+        self.render_timer = 0
+        parts, self.render_pending = self.render_pending, set()
+        if not self.window or not parts:
+            return GLib.SOURCE_REMOVE
+        started = time.monotonic()
+        if "sidebar" in parts:
+            self.render_sidebar()
+        elif "list" in parts:
+            self.render_list()
+        if "rail" in parts:
+            self.render_rail()
+        if self.current_chat() and self.main_stack.get_visible_child_name() == "chat":
+            if "header" in parts:
+                self.render_header()
+            if "messages" in parts or ("append" in parts and not self.append_messages()):
+                self.render_messages()
+            if "details" in parts:
+                self.render_details()
+        # Leave the main loop at least four times as long as a redraw took.
+        cost = time.monotonic() - started
+        self.render_ready_at = time.monotonic() + min(1.0, max(RENDER_GAP, cost * 4))
+        return GLib.SOURCE_REMOVE
 
     def date_divider(self, text):
         pill = label(text, "date-divider", xalign=0.5)
@@ -1378,46 +1599,66 @@ class Application(Gtk.Application):
         holder.set_cursor_from_name("pointer")
         return holder
 
-    def load_image(self, message, picture, preview=False, done=None):
-        url = str(message.get("url") or "")
-        if url.startswith("file://"):
-            texture = None
-            try:
-                texture = Gdk.Texture.new_from_filename(url[7:])
-            except GLib.Error:
-                pass
-            if texture:
-                picture.set_paintable(texture)
-                if done:
-                    done(texture)
-            return
+    def load_image(self, message, picture, preview=False, done=None, failed=None):
+        """Shows a photo in picture. The core downloads and decrypts it into
+        a private file and replies with the path; a worker thread decodes it
+        (scaled down for chat bubbles). done(texture) or failed() is called
+        once the outcome is known."""
+        photos = self.photos
         key = (message.get("id"), preview)
-        cached = self.image_textures.get(key) or self.image_textures.get((message.get("id"), False))
-        if cached:
+        cached = photos.texture(*key)
+        if cached is not None:
             picture.set_paintable(cached)
             if done:
                 done(cached)
             return
-        if not self.core or str(message.get("id", "")).startswith("pending-"):
+        url = str(message.get("url") or "")
+        local = url[7:] if url.startswith("file://") else ""
+        # Only the automatic previews of a chat back off after a failure;
+        # opening, copying or saving a photo always tries again.
+        if not local and (not self.core or str(message.get("id", "")).startswith("pending-") or (preview and photos.recently_failed(key))):
+            if failed:
+                failed()
             return
+        waiting = photos.waiting.get(key)
+        if waiting is not None:
+            # Already on its way (the chat was redrawn meanwhile): share it.
+            waiting.append((picture, done, failed))
+            return
+        photos.waiting[key] = [(picture, done, failed)]
+        generation = self.generation
+
+        def finish(texture, path=None):
+            if generation != self.generation:
+                return
+            waiters = photos.waiting.pop(key, None)
+            if waiters is None:
+                return  # forgotten meanwhile: the message was retracted
+            if texture is None:
+                photos.failed[key] = time.monotonic()
+                for _picture, _done, on_failed in waiters:
+                    if on_failed:
+                        on_failed()
+                return
+            photos.failed.pop(key, None)
+            photos.remember(key, texture, path)
+            for target, on_done, _failed in waiters:
+                target.set_paintable(texture)
+                if on_done:
+                    on_done(texture)
 
         def fetched(response):
-            if not response.get("ok"):
+            if generation != self.generation:
                 return
-            try:
-                data = base64.b64decode(response["result"]["data"])
-                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
-            except (KeyError, ValueError, GLib.Error):
+            path = (response.get("result") or {}).get("path") if response.get("ok") else None
+            if not isinstance(path, str) or not path.startswith("/"):
+                finish(None)
                 return
-            if len(self.image_textures) > 120:
-                self.image_textures.pop(next(iter(self.image_textures)))
-            self.image_textures[key] = texture
-            if not preview:
-                self.image_bytes[message.get("id")] = data
-            picture.set_paintable(texture)
-            if done:
-                done(texture)
-        self.core.request("images.fetch", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message.get("id"), "preview": preview}, fetched)
+            photos.decode(path, preview, lambda texture: finish(texture, path))
+        if local:
+            photos.decode(local, preview, lambda texture: finish(texture, local))
+        else:
+            self.core.request("images.fetch", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message.get("id"), "preview": preview}, fetched)
 
     def open_viewer(self, message):
         """LINE PC opens photos in their own window with save/copy."""
@@ -1428,53 +1669,85 @@ class Application(Gtk.Application):
         viewer.set_default_size(820, 640)
         viewer.add_css_class("photo-viewer")
         layout = box(V, 0)
+        stage = Gtk.Overlay()
+        stage.set_vexpand(True)
         picture = Gtk.Picture()
-        picture.set_vexpand(True)
         picture.set_can_shrink(True)
-        layout.append(picture)
+        stage.set_child(picture)
+        status = label("正在載入照片…", "viewer-status", xalign=0.5)
+        status.set_halign(CENTER)
+        status.set_valign(CENTER)
+        status.set_can_target(False)
+        stage.add_overlay(status)
+        layout.append(stage)
         bar = box(H, 6, "viewer-bar", halign=CENTER)
-        bar.append(button(icon_text("download", "儲存", 15), lambda: self.save_image(message, viewer), "viewer-btn"))
+        # These handlers reach the window through the widget that fired, not
+        # through a captured variable: a window whose own handlers refer to
+        # it is never freed, and each one holds a full-size picture.
+        save = button(icon_text("download", "儲存", 15), None, "viewer-btn")
+        save.connect("clicked", lambda source: self.save_image(message, source.get_root()))
+        share = button(icon_text("forward", "分享", 15), None, "viewer-btn")
+        share.connect("clicked", lambda source: (source.get_root().close(), self.open_forward(message)))
+        bar.append(save)
         bar.append(button(icon_text("copy", "複製", 15), lambda: self.copy_image(message), "viewer-btn"))
-        bar.append(button(icon_text("forward", "分享", 15), lambda: (viewer.close(), self.open_forward(message)), "viewer-btn"))
+        bar.append(share)
         layout.append(bar)
         viewer.set_child(layout)
         key = Gtk.EventControllerKey()
-        key.connect("key-pressed", lambda c, keyval, *_: (viewer.close(), True)[1] if keyval == Gdk.KEY_Escape else False)
+        key.connect("key-pressed", lambda controller, keyval, *_: (controller.get_widget().close(), True)[1] if keyval == Gdk.KEY_Escape else False)
         viewer.add_controller(key)
-        self.load_image(message, picture, preview=False)
+        # The small picture from the chat is shown at once and replaced by
+        # the full one when it arrives.
+        small = self.photos.texture(message.get("id"), True)
+        if small is not None:
+            picture.set_paintable(small)
+        self.load_image(message, picture, preview=False, done=lambda texture: status.set_visible(False),
+                        failed=lambda: status.set_text("無法載入照片，可能已過期。"))
         viewer.present()
 
     def image_data(self, message):
+        """The full picture's bytes as LINE delivered them, if at hand."""
         url = str(message.get("url") or "")
-        if url.startswith("file://"):
-            try:
-                return Path(url[7:]).read_bytes()
-            except OSError:
-                return None
-        return self.image_bytes.get(message.get("id"))
+        path = url[7:] if url.startswith("file://") else self.photos.paths.get(message.get("id"))
+        if not path:
+            return None
+        try:
+            return Path(path).read_bytes()
+        except OSError:
+            return None
+
+    def with_image(self, message, use):
+        """Calls use(bytes, texture) with the full picture, fetching it first
+        if needed. The bytes are the original file when it is still at hand,
+        otherwise a PNG of what is shown."""
+        def ready(texture):
+            data = self.image_data(message)
+            if not data:
+                try:
+                    data = bytes(texture.save_to_png_bytes().get_data())
+                except (AttributeError, GLib.Error):
+                    data = None
+            if data:
+                use(data, texture)
+            else:
+                self.toast("無法載入照片。", True)
+        self.load_image(message, Gtk.Picture(), preview=False, done=ready, failed=lambda: self.toast("無法載入照片，可能已過期。", True))
 
     def copy_image(self, message):
-        texture = self.image_textures.get((message.get("id"), False)) or self.image_textures.get((message.get("id"), True))
-        if texture is None and str(message.get("url") or "").startswith("file://"):
+        def copy(_data, texture):
+            # PyGObject has no Clipboard.set_texture; offer the texture itself
+            # plus PNG bytes for apps that only accept image/png.
+            providers = [Gdk.ContentProvider.new_for_value(texture)]
             try:
-                texture = Gdk.Texture.new_from_filename(message["url"][7:])
-            except GLib.Error:
-                texture = None
-        if texture is None:
-            self.toast("照片尚未載入完成。")
-            return
-        # PyGObject has no Clipboard.set_texture; offer the texture itself
-        # plus PNG bytes for apps that only accept image/png.
-        providers = [Gdk.ContentProvider.new_for_value(texture)]
-        try:
-            providers.append(Gdk.ContentProvider.new_for_bytes("image/png", texture.save_to_png_bytes()))
-        except (AttributeError, GLib.Error):
-            pass
-        self.window.get_clipboard().set_content(Gdk.ContentProvider.new_union(providers))
-        self.toast("已複製照片")
+                providers.append(Gdk.ContentProvider.new_for_bytes("image/png", texture.save_to_png_bytes()))
+            except (AttributeError, GLib.Error):
+                pass
+            self.window.get_clipboard().set_content(Gdk.ContentProvider.new_union(providers))
+            self.toast("已複製照片")
+        self.with_image(message, copy)
 
     def save_image(self, message, parent=None):
-        def write(data):
+        def write(data, _texture=None):
             dialog = Gtk.FileChooserNative.new("儲存照片", parent or self.window, Gtk.FileChooserAction.SAVE, "儲存", "取消")
             stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(int(message.get("time", 0)) / 1000))
             extension = "png" if data[:4] == b"\x89PNG" else ("gif" if data[:3] == b"GIF" else "jpg")
@@ -1491,12 +1764,7 @@ class Application(Gtk.Application):
                 chooser.destroy()
             dialog.connect("response", chosen)
             dialog.show()
-        data = self.image_data(message)
-        if data:
-            write(data)
-            return
-        holder = Gtk.Picture()
-        self.load_image(message, holder, preview=False, done=lambda texture: write(self.image_data(message) or bytes(texture.save_to_png_bytes().get_data())))
+        self.with_image(message, write)
 
     def message_menu(self, message, chat):
         """Right-click / long-press menu (LINE PC order)."""
@@ -1718,8 +1986,17 @@ class Application(Gtk.Application):
         reply = (self.replying or {}).get("id", "")
         if images and chat_id != KEEP_ID:
             self.clear_tray()
-            self.send_images(chat_id, images)
-        if text.strip():
+            caption = None
+            if text.strip():
+                # The text follows its photos, as in LINE. Photos upload in
+                # the background now, so text sent right away would arrive
+                # first; the composer is cleared here and the text goes out
+                # when the last photo has been sent.
+                self.state.drafts[chat_id] = ""
+                self.compose.get_buffer().set_text("")
+                caption = lambda: self.deliver_text(chat_id, text, reply_to=reply, emoji=emoji)
+            self.send_images(chat_id, images, after=caption)
+        elif text.strip():
             self.deliver_text(chat_id, text, from_composer=True, reply_to=reply, emoji=emoji)
         self.cancel_reply()
         self.update_send()
@@ -2042,7 +2319,7 @@ class Application(Gtk.Application):
         card.append(scrolled)
         layer.append(card)
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda gesture, n, x, y: self.close_modal() if layer.pick(x, y, Gtk.PickFlags.DEFAULT) is layer else None)
+        click.connect("pressed", lambda gesture, n, x, y: self.close_modal() if gesture.get_widget().pick(x, y, Gtk.PickFlags.DEFAULT) is gesture.get_widget() else None)
         layer.add_controller(click)
         self.overlay.add_overlay(layer)
         self.pages.set_can_focus(False)
@@ -2474,7 +2751,7 @@ class Application(Gtk.Application):
         self.toast(f"已分享給 {len(targets)} 個聊天" if len(targets) > 1 else f"已分享給「{targets[0]['name']}」")
 
     def forward_image(self, message, chat_id):
-        def send(data):
+        def send(data, _texture=None):
             if not data:
                 self.toast("照片尚未載入完成。", True)
                 return
@@ -2485,12 +2762,7 @@ class Application(Gtk.Application):
             # Offline demo photo: share the illustrated scene itself.
             send(bytes(art.texture("scene", "mountain", 640, 480, "").save_to_png_bytes().get_data()))
             return
-        data = self.image_data(message)
-        if data:
-            send(data)
-            return
-        holder = Gtk.Picture()
-        self.load_image(message, holder, preview=False, done=lambda texture: send(self.image_data(message) or bytes(texture.save_to_png_bytes().get_data())))
+        self.with_image(message, send)
 
     def can_send_text_to(self, chat_id):
         return chat_id == KEEP_ID or bool(self.state.session == "ready" and self.state.capabilities.get("text"))
@@ -2824,15 +3096,31 @@ class Application(Gtk.Application):
         picture.set_size_request(width, height)
         picture.set_can_shrink(True)
         if url:
-            def loaded(data):
-                try:
-                    texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
-                    if texture.get_width() <= 4096 and texture.get_height() <= 4096:
-                        picture.set_paintable(texture)
-                except GLib.Error:
-                    pass
-            self.pictures.load(url, loaded)
+            # Decoded once, on a worker, at twice the shown size (HiDPI); the
+            # conversation is redrawn often and used to decode every sticker
+            # and emoji again on the main loop each time.
+            key = (url, max(width, height) * 2)
+            cached = self.sticker_textures.get(key)
+            if cached is not None:
+                picture.set_paintable(cached)
+            elif key in self.sticker_waiting:
+                self.sticker_waiting[key].append(picture)
+            else:
+                # The widgets wait here, on the main loop; the callbacks given
+                # to the loader's threads must not hold a widget (its last
+                # reference could then be dropped on a worker thread).
+                self.sticker_waiting[key] = [picture]
+                if not self.pictures.load(url, lambda texture: self.sticker_loaded(key, texture),
+                                          failed=lambda: self.sticker_waiting.pop(key, None), size=key[1]):
+                    self.sticker_waiting.pop(key, None)
         return picture
+
+    def sticker_loaded(self, key, texture):
+        if len(self.sticker_textures) >= 300:
+            self.sticker_textures.pop(next(iter(self.sticker_textures)))
+        self.sticker_textures[key] = texture
+        for picture in self.sticker_waiting.pop(key, []):
+            picture.set_paintable(texture)
 
     # ------------------------------------------------------------------ files
     def can_attach(self):
@@ -2942,9 +3230,10 @@ class Application(Gtk.Application):
         self.pending_images = []
         self.render_tray()
 
-    def send_images(self, chat_id, paths, reply_to=""):
+    def send_images(self, chat_id, paths, reply_to="", after=None):
         generation = self.generation
         remaining = list(paths)
+        sent = []
 
         def next_image(response=None):
             if generation != self.generation:
@@ -2953,10 +3242,16 @@ class Application(Gtk.Application):
                 if not response.get("ok"):
                     self.toast(self.error(response), True)
                 self.after_message(chat_id)
+                # The demo shows a sent picture straight from its file.
+                if self.state.mode != "demo":
+                    self.discard_temp_images(sent[-1])
             if not remaining:
                 self.set_progress(None)
+                if after:
+                    after()
                 return
             path = remaining.pop(0)
+            sent.append(path)
             done = len(paths) - len(remaining)
             self.set_progress(f"正在傳送照片 {done}/{len(paths)}…")
             self.core.request("images.send", {"chat_id": chat_id, "path": path}, next_image)
@@ -3002,9 +3297,43 @@ class Application(Gtk.Application):
         return True
 
     def temp_image_path(self, prefix):
-        directory = Path(GLib.get_user_cache_dir()) / "matrix-line" / "outgoing"
+        """A file for a picture on its way out (pasted, captured, forwarded).
+        It lives in the runtime directory, which is kept in memory and
+        cleared at logout, and is deleted once sent: these used to pile up,
+        decrypted, in the cache directory."""
+        directory = Path(GLib.get_user_runtime_dir()) / "matrix-line" / "outgoing"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return directory / f"{prefix}-{uuid.uuid4().hex[:12]}.png"
+        path = directory / f"{prefix}-{uuid.uuid4().hex[:12]}.png"
+        self.temp_images.add(str(path))
+        return path
+
+    def discard_temp_images(self, only=None):
+        """Deletes temporary outgoing pictures: one path, or all that are not
+        waiting in the composer tray."""
+        paths = [str(only)] if only else [path for path in self.temp_images if path not in self.pending_images]
+        for path in paths:
+            if path in self.temp_images:
+                self.temp_images.discard(path)
+                try:
+                    Path(path).unlink()
+                except OSError:
+                    pass
+
+    def sweep_outgoing(self):
+        """Removes outgoing pictures left behind by earlier runs, including
+        the cache directory older versions wrote them to."""
+        cutoff = time.time() - 3600
+        for directory in (Path(GLib.get_user_runtime_dir()) / "matrix-line" / "outgoing", Path(GLib.get_user_cache_dir()) / "matrix-line" / "outgoing"):
+            try:
+                entries = list(directory.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.name.startswith(("forward-", "paste-", "screenshot-")) and entry.suffix == ".png" and entry.lstat().st_mtime < cutoff:
+                        entry.unlink()
+                except OSError:
+                    pass
 
     def take_screenshot(self):
         """xdg-desktop-portal Screenshot (interactive) — works on GNOME/KDE
@@ -3203,6 +3532,8 @@ class Application(Gtk.Application):
                     and self.state.selected and self.main_stack.get_visible_child_name() == "chat")
 
     def focus_changed(self, *_):
+        if self.window and self.window.is_active():
+            self.clear_summary()
         if self.reading():
             chat_id = self.state.selected
             if self.state.chats.get(chat_id, {}).get("unread"):
@@ -3217,7 +3548,15 @@ class Application(Gtk.Application):
             return
         messages = [m for m in self.state.messages.get(self.state.selected, []) if not str(m["id"]).startswith("pending-")]
         if messages and self.core and self.state.selected != KEEP_ID:
-            self.core.request("messages.read", {"chat_id": self.state.selected, "message_id": messages[-1]["id"]})
+            chat_id, message_id = self.state.selected, messages[-1]["id"]
+            if self.read_marks.get(chat_id) == message_id:
+                return  # LINE already knows; each receipt is a round trip
+            self.read_marks[chat_id] = message_id
+
+            def done(response):
+                if not response.get("ok") and self.read_marks.get(chat_id) == message_id:
+                    del self.read_marks[chat_id]
+            self.core.request("messages.read", {"chat_id": chat_id, "message_id": message_id}, done)
 
     def logout(self):
         if not self.core:
@@ -3242,6 +3581,16 @@ class Application(Gtk.Application):
         self.menu.popdown()
         self.sticker_popover.popdown()
         self.state.clear()
+        self.photos.clear()
+        self.read_marks.clear()
+        self.sticker_waiting.clear()
+        self.reload_due = False
+        self.discard_temp_images()
+        self.rendered = None
+        self.history_limit = HISTORY_PAGE
+        self.list_key = None
+        self.render_pending.clear()
+        self.clear_summary()
         self.persistent = None
         self.compose.get_buffer().set_text("")
         self.password_entry.set_text("")
@@ -3307,6 +3656,7 @@ class Application(Gtk.Application):
             if "persistent" in data and self.state.mode != "demo":
                 self.persistent = bool(data["persistent"])
             if state == "ready":
+                self.reload_open_chat()
                 self.pages.set_visible_child_name("workspace")
                 self.auth_busy(False)
                 self.password_entry.set_text("")
@@ -3329,38 +3679,48 @@ class Application(Gtk.Application):
                 return
             self.state.snapshot(data)
             self.load_local()
-            if self.state.selected and self.state.selected in self.state.chats:
-                self.state.chats[self.state.selected]["unread"] = 0
-            self.render_rail()
-            self.render_sidebar()
-            if not self.state.selected or self.state.selected not in self.state.chats:
+            selected = self.state.selected
+            if not selected or selected not in self.state.chats:
                 # LINE opens on a blank pane: opening a chat is always the
                 # user's choice, so no read receipt is sent at login.
                 self.state.selected = None
                 if self.main_stack.get_visible_child_name() == "chat":
                     self.main_stack.set_visible_child_name("empty")
+                self.queue_render("sidebar", "rail")
             else:
-                self.render_header()
-                self.render_details()
-        elif event == "message":
+                if self.reading():
+                    self.state.chats[selected]["unread"] = 0
+                self.queue_render("sidebar", "rail", "header", "details")
+        elif event in ("messages", "message"):
             if self.state.session == "logged_out":
                 return
-            message = data.get("message", {})
-            added = self.state.add_message(message)
-            chat_id = str(message.get("chat_id", ""))
-            if added:
-                self.notify(message)
-            if chat_id == self.state.selected:
-                if added and not message.get("mine") and not self.reading():
-                    chat = self.state.chats.get(chat_id)
-                    if chat is not None:
-                        chat["unread"] = chat.get("unread", 0) + 1
-                self.after_message(chat_id)
-                self.mark_read()
-            else:
-                self.render_list()
-                self.render_rail()
-                self.render_sidebar()
+            batch = data.get("messages") if event == "messages" else [data.get("message")]
+            self.messages_arrived([message for message in batch or [] if isinstance(message, dict)], data.get("chats"))
+        elif event == "chats":
+            # Only the chat rows that changed (a snapshot is the whole account).
+            if self.state.session == "logged_out":
+                return
+            changed = self.state.update_chats(data.get("chats") or [])
+            selected = self.state.selected
+            if selected in changed:
+                if self.reading():
+                    self.state.chats[selected]["unread"] = 0
+                self.queue_render("list", "rail", "header", "details")
+            elif changed:
+                self.queue_render("list", "rail")
+        elif event == "resync":
+            # The core starts over from LINE's current state after a long
+            # time offline. Conversations held here may lack what arrived
+            # meanwhile and still show what was retracted: drop them (they
+            # are loaded again when opened) and reload the open one as soon
+            # as the core accepts requests.
+            selected = self.state.selected
+            for chat_id in list(self.state.messages):
+                if chat_id not in (KEEP_ID, selected):
+                    del self.state.messages[chat_id]
+            self.read_marks.clear()
+            self.reload_due = bool(selected and selected != KEEP_ID)
+            self.reload_open_chat()
         elif event == "read":
             # Read receipt (op 55): someone read up to `time` in this chat.
             chat = self.state.chats.get(str(data.get("chat_id", "")))
@@ -3372,7 +3732,7 @@ class Application(Gtk.Application):
             if int(data.get("time", 0) or 0) > int(readers.get(reader, 0) or 0):
                 readers[reader] = int(data.get("time", 0) or 0)
                 if chat["id"] == self.state.selected and self.main_stack.get_visible_child_name() == "chat":
-                    self.render_messages()
+                    self.queue_render("messages")
         elif event == "unsent":
             chat_id = str(data.get("chat_id", ""))
             message_id = str(data.get("message_id", ""))
@@ -3382,8 +3742,9 @@ class Application(Gtk.Application):
                     message.update(unsent=True, kind="unsent", text="", url="")
                     message.pop("emoji", None)
                     changed = True
+            self.photos.forget(message_id)
             if changed and chat_id == self.state.selected and self.main_stack.get_visible_child_name() == "chat":
-                self.render_messages()
+                self.queue_render("messages")
         elif event == "notice":
             self.toast(data.get("message", ""), data.get("level") == "error")
         elif event == "auth":
@@ -3409,18 +3770,111 @@ class Application(Gtk.Application):
             elif stage == "error":
                 self.auth_failed(data.get("message", "登入失敗，請重新嘗試。"))
 
-    def notify(self, message):
+    def messages_arrived(self, batch, rows=None):
+        """Takes in a batch of messages from the core: one pass over the
+        state, one coalesced redraw and at most a few notifications, however
+        many messages the batch (or a burst of batches) holds.
+
+        rows are the chat rows the batch changed. They are applied first, so
+        a chat is known before its first message (and can be notified), and
+        unread counts are taken from them rather than counted here."""
+        counted = isinstance(rows, list)
+        changed = self.state.update_chats(rows) if counted else []
+        selected = self.state.selected
+        fresh, open_changed, replaced = [], False, False
+        for message in batch:
+            chat_id = str(message.get("chat_id", ""))
+            added = self.state.add_message(message, count=not counted)
+            if added:
+                fresh.append(message)
+            if chat_id and chat_id == selected:
+                open_changed = True
+                replaced = replaced or not added
+                if not counted and added and not message.get("mine") and not self.reading():
+                    chat = self.state.chats.get(chat_id)
+                    if chat is not None:
+                        chat["unread"] = chat.get("unread", 0) + 1
+        if selected in changed and self.reading():
+            self.state.chats[selected]["unread"] = 0
+        self.notify_batch(fresh)
+        if open_changed:
+            self.queue_render("list", "rail", "header", "details", "messages" if replaced else "append")
+            self.mark_read()
+        else:
+            self.queue_render("list", "rail")
+
+    def notify_batch(self, messages):
+        """At most one notification per chat for a batch of new messages,
+        and one summary once NOTIFY_BURST notifications went out within
+        NOTIFY_WINDOW. (The core no longer replays old messages; their age
+        is deliberately not judged here, because LINE's timestamps cannot be
+        compared with a local clock that may be wrong.)"""
+        if not messages or not self.prefs.settings["notifications"]:
+            return
+        latest = {}
+        for message in messages:
+            chat_id = str(message.get("chat_id", ""))
+            chat = self.state.chats.get(chat_id)
+            if message.get("mine") or message.get("unsent") or not chat or self.chat_muted(chat):
+                continue
+            if self.window.is_active() and chat_id == self.state.selected:
+                continue
+            stamp = int(message.get("time") or 0)
+            entry = latest.setdefault(chat_id, [message, 0])
+            if stamp >= int(entry[0].get("time") or 0):
+                entry[0] = message
+            entry[1] += 1
+        now = time.monotonic()
+        while self.notify_times and now - self.notify_times[0] > NOTIFY_WINDOW:
+            self.notify_times.popleft()
+        held = 0
+        for message, count in latest.values():
+            if len(self.notify_times) < NOTIFY_BURST:
+                self.notify_times.append(now)
+                self.notify(message, count)
+            else:
+                held += count
+        if held and not self.window.is_active():
+            self.summary_count += held
+            if not self.summary_timer:
+                # Shown at once, then brought up to date once per window.
+                self.show_summary()
+                self.summary_timer = GLib.timeout_add(int(NOTIFY_WINDOW * 1000), self.summary_tick)
+
+    def summary_tick(self):
+        self.summary_timer = 0
+        if self.summary_count != self.summary_shown:
+            self.show_summary()
+            self.summary_timer = GLib.timeout_add(int(NOTIFY_WINDOW * 1000), self.summary_tick)
+        return GLib.SOURCE_REMOVE
+
+    def show_summary(self):
+        if not self.window or not self.summary_count:
+            return
+        self.summary_shown = self.summary_count
+        notification = Gio.Notification.new("LINE")
+        notification.set_body(f"還有 {self.summary_count} 則新訊息")
+        notification.set_default_action_and_target("app.open-chat", GLib.Variant.new_string(""))
+        self.send_notification("new-messages", notification)
+
+    def clear_summary(self):
+        if self.summary_count or self.summary_shown:
+            self.summary_count = self.summary_shown = 0
+            self.withdraw_notification("new-messages")
+
+    def notify(self, message, count=1):
         chat_id = str(message.get("chat_id", ""))
         chat = self.state.chats.get(chat_id)
-        if message.get("mine") or not chat or not self.prefs.settings["notifications"] or self.prefs.has("muted", chat_id):
-            return
-        if self.window.is_active() and chat_id == self.state.selected:
+        if not chat:
             return
         notification = Gio.Notification.new(chat.get("name", "LINE"))
         body = message.get("text") if message.get("kind") == "text" else media_label(message)
+        body = str(body or "").replace("\ufffc", "(表情貼)")
         if chat.get("kind") == "group":
             body = f"{message.get('sender_name') or '成員'}：{body}"
-        notification.set_body(str(body)[:200])
+        if count > 1:
+            body = f"{body[:170]}（共 {count} 則新訊息）"
+        notification.set_body(body[:200])
         notification.set_default_action_and_target("app.open-chat", GLib.Variant.new_string(chat_id))
         self.send_notification("chat-" + chat_id[:64], notification)
 
@@ -3448,6 +3902,9 @@ class Application(Gtk.Application):
 
     def shutdown_core(self, *_):
         self.pictures.closed = True
+        self.photos.closed = True
+        self.pending_images = []
+        self.discard_temp_images()
         if self.core:
             self.core.stop()
         self.window = None

@@ -21,6 +21,11 @@ import (
 // MaxImageSize is LINE's photo limit; larger pictures are sent as files.
 const MaxImageSize = 20 << 20
 
+// maxPixels is the largest picture sent as a photo (64 megapixels).
+const maxPixels = 64 << 20
+
+var ErrImageDimensions = errors.New("圖片尺寸過大，請縮小後再傳送，或改以檔案傳送。")
+
 var ErrNotImage = errors.New("不是可傳送的圖片格式（支援 JPEG、PNG、GIF）。")
 
 // PreparedImage is an image message ready for sendPayload (E2EE) or for a
@@ -65,6 +70,10 @@ func PrepareImage(ctx context.Context, client *line.Client, chatID, path string,
 	name := filepath.Base(path)
 	if path == "" || name == "." || name == "/" {
 		name = "image." + extension
+	}
+	// Decoding an enormous picture for its preview needs gigabytes of memory.
+	if int64(cfg.Width)*int64(cfg.Height) > maxPixels {
+		return nil, ErrImageDimensions
 	}
 	preview, pw, ph, previewErr := Thumbnail(data, 1280)
 	flow, err := client.DetermineMediaMessageFlow(chatID)

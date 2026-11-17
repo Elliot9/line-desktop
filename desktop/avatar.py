@@ -7,6 +7,10 @@ gi.require_version("Gsk", "4.0")
 from gi.repository import Gdk, GLib, Graphene, Gsk, Gtk
 
 from .art import texture as art_texture
+from .pictures import allowed
+
+# Avatars are drawn at up to 104 px (the profile card), twice that on HiDPI.
+AVATAR_PIXELS = 256
 
 # Set by the application: Pictures loader and a callable(person_id) -> dict.
 LOADER = None
@@ -34,21 +38,22 @@ def request(url, widget):
     if waiting is not None:
         waiting.append(widget)
         return None
+    if LOADER is None or not allowed(url):
+        TEXTURES[url] = None
+        return None
     WAITING[url] = [widget]
 
-    def loaded(data):
-        try:
-            paint = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
-        except GLib.Error:
-            paint = None
+    def loaded(paint):
         if len(TEXTURES) > 400:
             TEXTURES.pop(next(iter(TEXTURES)))
         TEXTURES[url] = paint
         for item in WAITING.pop(url, []):
             item.queue_draw()
-    if LOADER is None or not LOADER.load(url, loaded, failed=lambda: WAITING.pop(url, None)):
+    # The loader decodes on its worker threads, scaled to avatar size. When
+    # its queue is full the picture is simply asked for again on a later draw
+    # (it used to be remembered as missing and stay blank).
+    if not LOADER.load(url, loaded, failed=lambda: WAITING.pop(url, None), size=AVATAR_PIXELS):
         WAITING.pop(url, None)
-        TEXTURES[url] = None
     return None
 
 

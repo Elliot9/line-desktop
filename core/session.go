@@ -21,7 +21,6 @@ type savedSession struct {
 	MID          string            `json:"mid"`
 	Keys         map[string]string `json:"keys"`
 	RefreshAt    int64             `json:"refresh_at"`
-	Revision     int64             `json:"revision"`
 }
 type sessionStore interface {
 	Load(context.Context) (*savedSession, error)
