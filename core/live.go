@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beeper/line/pkg/e2ee"
@@ -78,16 +81,24 @@ const maxResolve = 400
 // with GetContactsV2 in batches and, for official accounts that the contact
 // API does not return, GetBuddyProfile.
 func (b *backend) resolvePeople(friendByID map[string]person) {
+	// People holds only those who are not in Contacts: the snapshot already
+	// lists every friend once, and listing them here again nearly doubled it.
 	people := map[string]person{}
 	for id, p := range b.data.People {
-		people[id] = p
+		if _, friend := friendByID[id]; !friend {
+			people[id] = p
+		}
 	}
-	for id, p := range friendByID {
-		people[id] = p
+	known := func(id string) (person, bool) {
+		if p, ok := friendByID[id]; ok {
+			return p, true
+		}
+		p, ok := people[id]
+		return p, ok
 	}
 	wanted := map[string]bool{}
 	want := func(id string) {
-		if _, ok := people[id]; !ok && validMID(id) && midKind(id) == 'u' && (b.session == nil || id != b.session.MID) {
+		if _, ok := known(id); !ok && validMID(id) && midKind(id) == 'u' && (b.session == nil || id != b.session.MID) {
 			wanted[id] = true
 		}
 	}
@@ -143,7 +154,7 @@ func (b *backend) resolvePeople(friendByID map[string]person) {
 	b.data.People = people
 	for i := range b.data.Chats {
 		row := &b.data.Chats[i]
-		if p, ok := people[row.ID]; ok && row.Kind == "direct" {
+		if p, ok := known(row.ID); ok && row.Kind == "direct" {
 			if row.Name == "" || row.Name == row.ID {
 				row.Name = p.Name
 			}
@@ -154,7 +165,7 @@ func (b *backend) resolvePeople(friendByID map[string]person) {
 	}
 	for chatID, list := range b.messages {
 		for i := range list {
-			if p, ok := people[list[i].SenderID]; ok && (list[i].SenderName == "" || list[i].SenderName == list[i].SenderID) {
+			if p, ok := known(list[i].SenderID); ok && (list[i].SenderName == "" || list[i].SenderName == list[i].SenderID) {
 				list[i].SenderName = p.Name
 			}
 		}
@@ -313,6 +324,19 @@ func (b *backend) refreshSnapshot() error {
 		if err != nil {
 			return err
 		}
+		// Decrypting the previews needs one key per sender and per group.
+		// Fetching them one after another made a login with many chats take
+		// a minute or more; fetch what this page needs in parallel first.
+		var previews []*line.Message
+		for i := range boxes.MessageBoxes {
+			box := &boxes.MessageBoxes[i]
+			if (chatKind(box.ID) == "direct" || member[box.ID]) && validMID(box.ID) {
+				for j := range box.LastMessages {
+					previews = append(previews, &box.LastMessages[j])
+				}
+			}
+		}
+		b.prefetchKeys(previews)
 		for _, box := range boxes.MessageBoxes {
 			if chatKind(box.ID) != "direct" && !member[box.ID] {
 				continue
@@ -369,7 +393,8 @@ func (b *backend) refreshSnapshot() error {
 		}
 		return b.data.Chats[i].UpdatedAt > b.data.Chats[j].UpdatedAt
 	})
-	b.emit("snapshot", b.data)
+	b.snapshotRetry, b.snapshotDelay = time.Time{}, 0
+	b.emitSnapshot()
 	return nil
 }
 func (b *backend) rememberMessage(m message) {
@@ -401,6 +426,7 @@ func (b *backend) listMessages(chatID string, limit int) ([]message, error) {
 	if err != nil {
 		return nil, err
 	}
+	b.prefetchKeys(raw)
 	result := make([]message, 0, len(raw))
 	for _, m := range raw {
 		if m == nil {
@@ -537,42 +563,232 @@ func (b *backend) decryptPayload(raw *line.Message) ([]byte, error) {
 		return nil, err
 	}
 	if raw.ToType == 1 || raw.ToType == 2 {
-		if err = b.ensurePublicKey(raw.From, sender); err != nil {
+		if err = b.fetchKey("user", raw.From, sender, func() error { return b.ensurePublicKey(raw.From, sender) }); err != nil {
 			return nil, err
 		}
-		if err = b.ensureGroupKey(raw.To, receiver, false); err != nil {
-			return nil, err
-		}
+		// The manager keeps the group keys it has unwrapped, so LINE is asked
+		// for one only when decryption fails without it. Fetching the shared
+		// key for every group message cost a round trip per message.
 		text, _, err := b.crypto.DecryptGroupMessage(raw, raw.To)
+		if err == nil {
+			return []byte(text), nil
+		}
+		if err = b.fetchKey("group", raw.To, receiver, func() error { return b.ensureGroupKey(raw.To, receiver, false) }); err != nil {
+			return nil, err
+		}
+		text, _, err = b.crypto.DecryptGroupMessage(raw, raw.To)
 		return []byte(text), err
 	}
 	peerMID, peerKey := raw.From, sender
 	if b.crypto.IsMyKey(sender) {
 		peerMID, peerKey = raw.To, receiver
 	}
-	if err = b.ensurePublicKey(peerMID, peerKey); err != nil {
+	if err = b.fetchKey("user", peerMID, peerKey, func() error { return b.ensurePublicKey(peerMID, peerKey) }); err != nil {
 		return nil, err
 	}
 	text, err := b.crypto.DecryptMessageV2(raw)
 	return []byte(text), err
 }
+
+// keyMissTTL is how long a key that could not be fetched is not asked for
+// again while decrypting.
+const keyMissTTL = 20 * time.Second
+
+var errKeyUnavailable = errors.New("encryption key unavailable")
+
+// fetchKey runs fetch unless the same key could not be fetched moments ago.
+// Without it, every message of a burst or of a chat history whose key is
+// unavailable costs another failing round trip to LINE. Only decryption uses
+// it; sending always asks LINE.
+func (b *backend) fetchKey(kind, owner string, keyID int, fetch func() error) error {
+	name := kind + "\x00" + owner + "\x00" + strconv.Itoa(keyID)
+	if at, ok := b.keyMisses[name]; ok && time.Since(at) < keyMissTTL {
+		return errKeyUnavailable
+	}
+	err := fetch()
+	switch {
+	case err == nil:
+		delete(b.keyMisses, name)
+	case !isAuthError(err):
+		if b.keyMisses == nil || len(b.keyMisses) >= 4096 {
+			b.keyMisses = map[string]time.Time{}
+		}
+		b.keyMisses[name] = time.Now()
+	}
+	return err
+}
 func (b *backend) ensurePublicKey(mid string, keyID int) error {
 	if b.crypto.HasPeerPublicKey(keyID) {
 		return nil
 	}
-	key, err := b.api().GetE2EEPublicKey(mid, 1, keyID)
+	public, err := fetchPublicKey(b.api(), mid, keyID)
 	if err != nil {
 		return err
 	}
-	id, err := key.KeyID.Int64()
-	if err != nil || id != int64(keyID) {
-		return errors.New("public key ID mismatch")
-	}
-	b.crypto.RegisterPeerPublicKey(keyID, key.PublicKey)
+	b.crypto.RegisterPeerPublicKey(keyID, public)
 	if !b.crypto.HasPeerPublicKey(keyID) {
 		return errors.New("invalid peer public key")
 	}
 	return nil
+}
+
+func fetchPublicKey(client *line.Client, mid string, keyID int) (string, error) {
+	key, err := client.GetE2EEPublicKey(mid, 1, keyID)
+	if err != nil {
+		return "", err
+	}
+	if key == nil {
+		return "", errors.New("missing public key")
+	}
+	id, err := key.KeyID.Int64()
+	if err != nil || id != int64(keyID) {
+		return "", errors.New("public key ID mismatch")
+	}
+	return key.PublicKey, nil
+}
+
+// keyNeed names one key a message needs before it can be decrypted.
+type keyNeed struct {
+	group bool
+	owner string // a user's MID, or the chat's MID for a group key
+	keyID int
+}
+
+func (n keyNeed) name() string {
+	kind := "user"
+	if n.group {
+		kind = "group"
+	}
+	return kind + "\x00" + n.owner + "\x00" + strconv.Itoa(n.keyID)
+}
+
+type keyMaterial struct {
+	public string                   // the user's key, or the group key creator's when it had to be fetched
+	shared *line.E2EEGroupSharedKey // the group key
+	err    error
+}
+
+// keyFetchers bounds the parallel key requests of prefetchKeys.
+const keyFetchers = 6
+
+// prefetchKeys fetches the keys needed to decrypt raws that are not at hand
+// yet, in parallel, and hands them to the crypto manager. Decryption then
+// finds them in place; whatever could not be fetched is remembered so the
+// messages that need it fail at once instead of asking again one by one.
+func (b *backend) prefetchKeys(raws []*line.Message) {
+	if b.demo || b.crypto == nil || b.session == nil {
+		return
+	}
+	seen := map[keyNeed]bool{}
+	var needs []keyNeed
+	add := func(need keyNeed) {
+		if seen[need] {
+			return
+		}
+		seen[need] = true
+		if need.group && b.groupKeys[need] || !need.group && b.crypto.HasPeerPublicKey(need.keyID) {
+			return
+		}
+		if at, ok := b.keyMisses[need.name()]; ok && time.Since(at) < keyMissTTL {
+			return
+		}
+		needs = append(needs, need)
+	}
+	for _, raw := range raws {
+		if raw == nil || len(raw.Chunks) < 5 {
+			continue
+		}
+		if _, done := b.decryptedPayloads[raw.ID]; done {
+			continue
+		}
+		sender, err := e2ee.DecodeKeyID(raw.Chunks[len(raw.Chunks)-2])
+		if err != nil {
+			continue
+		}
+		receiver, err := e2ee.DecodeKeyID(raw.Chunks[len(raw.Chunks)-1])
+		if err != nil {
+			continue
+		}
+		if raw.ToType == 1 || raw.ToType == 2 {
+			add(keyNeed{false, raw.From, sender})
+			add(keyNeed{true, raw.To, receiver})
+		} else if b.crypto.IsMyKey(sender) {
+			add(keyNeed{false, raw.To, receiver})
+		} else {
+			add(keyNeed{false, raw.From, sender})
+		}
+	}
+	if len(needs) < 2 {
+		return // a single key is fetched just as fast while decrypting
+	}
+	results := make([]keyMaterial, len(needs))
+	jobs := make(chan int)
+	token, hasPublic := b.session.AccessToken, b.crypto.HasPeerPublicKey
+	var fetchers sync.WaitGroup
+	for range min(keyFetchers, len(needs)) {
+		fetchers.Add(1)
+		go func() {
+			defer fetchers.Done()
+			client := apiClient(b.ctx, token)
+			for i := range jobs {
+				results[i] = fetchKeyMaterial(client, needs[i], hasPublic)
+			}
+		}()
+	}
+	for i := range needs {
+		jobs <- i
+	}
+	close(jobs)
+	fetchers.Wait()
+	for i, got := range results {
+		need := needs[i]
+		err := got.err
+		if err == nil && !need.group {
+			b.crypto.RegisterPeerPublicKey(need.keyID, got.public)
+		}
+		if err == nil && need.group {
+			if got.public != "" {
+				b.crypto.RegisterPeerPublicKey(got.shared.CreatorKeyID, got.public)
+			}
+			if _, err = b.crypto.UnwrapGroupSharedKey(need.owner, got.shared); err == nil {
+				b.noteGroupKey(need.owner, need.keyID)
+			}
+		}
+		if err != nil && !isAuthError(err) {
+			if b.keyMisses == nil || len(b.keyMisses) >= 4096 {
+				b.keyMisses = map[string]time.Time{}
+			}
+			b.keyMisses[need.name()] = time.Now()
+		}
+	}
+}
+
+// fetchKeyMaterial runs on a worker and touches no backend state.
+func fetchKeyMaterial(client *line.Client, need keyNeed, hasPublic func(int) bool) (got keyMaterial) {
+	defer func() {
+		if recover() != nil {
+			got = keyMaterial{err: errInternal}
+		}
+	}()
+	if !need.group {
+		got.public, got.err = fetchPublicKey(client, need.owner, need.keyID)
+		return got
+	}
+	got.shared, got.err = client.GetE2EEGroupSharedKey(need.owner, need.keyID)
+	if got.err == nil && got.shared == nil {
+		got.err = errors.New("missing group key")
+	}
+	if got.err == nil && !hasPublic(got.shared.CreatorKeyID) {
+		got.public, got.err = fetchPublicKey(client, got.shared.Creator, got.shared.CreatorKeyID)
+	}
+	return got
+}
+
+func (b *backend) noteGroupKey(chatID string, keyID int) {
+	if b.groupKeys == nil {
+		b.groupKeys = map[keyNeed]bool{}
+	}
+	b.groupKeys[keyNeed{true, chatID, keyID}] = true
 }
 func (b *backend) ensureGroupKey(chatID string, keyID int, register bool) error {
 	var key *line.E2EEGroupSharedKey
@@ -598,6 +814,9 @@ func (b *backend) ensureGroupKey(chatID string, keyID int, register bool) error 
 		return err
 	}
 	_, err = b.crypto.UnwrapGroupSharedKey(chatID, key)
+	if err == nil {
+		b.noteGroupKey(chatID, key.GroupKeyID)
+	}
 	if errors.Is(err, e2ee.ErrMissingOwnPrivateKey) && register {
 		if err = b.registerGroupKey(chatID); err != nil {
 			return err
@@ -828,6 +1047,18 @@ func (b *backend) sendReply(chatID, text, replyTo string) (message, error) {
 func isAuthError(err error) bool {
 	return err != nil && (line.IsLoggedOut(err) || line.IsRefreshRequired(err) || line.HTTPStatusCode(err) == 401 || line.HTTPStatusCode(err) == 403)
 }
+
+// transientFailure reports whether a request failed without LINE giving a
+// verdict: it never got through, timed out, or the server was overloaded.
+func transientFailure(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	status := line.HTTPStatusCode(err)
+	return status >= 500 || status == 429
+}
+
 func (b *backend) handleAuthError(err error) {
 	if !isAuthError(err) || b.session == nil {
 		return
@@ -839,11 +1070,21 @@ func (b *backend) handleAuthError(err error) {
 		return
 	}
 	if refreshErr := refreshSaved(b.api(), b.session); refreshErr != nil {
-		b.stop()
-		b.clearData()
-		b.sessionEvent("logged_out", "登入已過期，請重新登入。")
+		if !transientFailure(refreshErr) {
+			b.stop()
+			b.clearData()
+			b.sessionEvent("logged_out", "登入已過期，請重新登入。")
+			return
+		}
+		// The refresh did not get through (no network, a timeout, LINE
+		// overloaded): that says nothing about the login, so the session
+		// stays and tick() tries again shortly. Logging out here used to
+		// throw away the session over a moment of bad Wi-Fi.
+		b.session.RefreshAt = time.Now().Add(15 * time.Second).Unix()
+		b.notice("登入憑證暫時無法更新，稍後自動重試。")
 		return
 	}
+	b.obsTokens = nil // the media token dies with the access token
 	b.saveSession()
 	b.stopStream()
 	b.startStream()

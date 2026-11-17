@@ -181,6 +181,7 @@ scripts/      建置、打包、測試
 ```bash
 cd core && go test ./... && cd ..                            # 核心測試
 python3 scripts/check-core.py .build/line-core-linux-amd64   # 核心協定檢查
+python3 scripts/check-ui.py                                  # 介面的傳輸與聊天狀態檢查（不需要顯示器）
 scripts/gui-smoke.sh            # GUI 自動檢查（需要 xvfb xauth dbus-x11 imagemagick）
 scripts/package.sh amd64        # 打包到 dist/，附 SHA256
 ```

@@ -1,12 +1,29 @@
 """Private JSON-lines transport. Only the GTK main loop touches UI state."""
+import collections
 import json
 import os
 import queue
 from pathlib import Path
 import subprocess
+import sys
 import threading
+import time
+import traceback
 
+# What the UI may send in one request; the core enforces the same limit.
 MAX_ENVELOPE = 2 * 1024 * 1024
+# One line from the core. The snapshot of a large account (every friend, chat
+# and group member) can be several MiB, so this is only a sanity bound; photos
+# never travel through the pipe (the core returns a file path instead).
+MAX_INCOMING = 64 * 1024 * 1024
+# Parsed envelopes waiting for the main loop. When the UI falls behind, the
+# reader stops reading and the core waits on its pipe, instead of the backlog
+# piling up in memory.
+INBOX_LIMIT = 256
+# Seconds of event handling per main-loop turn before yielding to GTK, so a
+# burst of events cannot keep the window from drawing or taking input.
+DRAIN_BUDGET = 0.008
+STOPPED = "!stopped"
 
 
 class Core:
@@ -17,7 +34,10 @@ class Core:
         self.sequence = 0
         self.lock = threading.Lock()
         self.closed = False
-        self.outgoing = queue.Queue(maxsize=64)
+        self.inbox = collections.deque()
+        self.ready = threading.Condition()
+        self.draining = False
+        self.outgoing = queue.Queue(maxsize=256)
         executable = os.environ.get("LINE_APP_CORE", str(Path(__file__).resolve().parents[1] / "build/line-core"))
         self.process = subprocess.Popen([executable] + (["--demo"] if demo else []), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.reader = threading.Thread(target=self.read, daemon=True, name="line-core-reader")
@@ -60,34 +80,95 @@ class Core:
                 self.dispatch(self.event, "notice", {"level": "error", "message": "核心連線已中斷，請重新啟動程式。"})
 
     def read(self):
+        stream = self.process.stdout
         try:
-            while not self.closed:
-                line = self.process.stdout.readline(MAX_ENVELOPE + 1)
+            # Reading continues until the core closes the pipe, also after
+            # stop(): a core that is in the middle of a write can then finish
+            # it, notice the shutdown and remove its temporary photos.
+            while True:
+                line = stream.readline(MAX_INCOMING + 1)
                 if not line:
                     break
-                if len(line) > MAX_ENVELOPE:
-                    raise ValueError("oversized envelope")
-                data = json.loads(line)
-                if data.get("event"):
-                    self.dispatch(self.event, data["event"], data.get("data", {}))
-                elif "id" in data:
-                    with self.lock:
-                        callback = self.callbacks.pop(str(data["id"]), None)
-                    if callback:
-                        self.dispatch(callback, data)
+                if self.closed:
+                    continue
+                if len(line) > MAX_INCOMING and not line.endswith(b"\n"):
+                    # Drop the rest of the line and carry on. Treating this as
+                    # fatal used to end the whole session over one reply.
+                    while line and not line.endswith(b"\n"):
+                        line = stream.readline(1024 * 1024)
+                    self.deliver({"event": "notice", "data": {"level": "error", "message": "核心傳回的資料過大，已略過。"}})
+                    continue
+                try:
+                    data = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(data, dict):
+                    self.deliver(data)
         except (OSError, ValueError, TypeError):
             pass
         if not self.closed:
-            self.dispatch(self.event, "session", {"state": "error", "message": "核心已停止。請重新啟動程式；未送出的內容仍保留在輸入框。"})
+            self.deliver({"event": STOPPED})
+
+    def deliver(self, item):
+        """Reader thread: hand one envelope to the main loop, waiting while
+        the main loop is INBOX_LIMIT envelopes behind."""
+        with self.ready:
+            while len(self.inbox) >= INBOX_LIMIT and not self.closed:
+                self.ready.wait(0.5)
+            if self.closed:
+                return
+            self.inbox.append(item)
+            schedule = not self.draining
+            self.draining = True
+        if schedule:
+            self.dispatch(self.drain)
+
+    def drain(self):
+        """Main loop: handle queued envelopes in order for a few milliseconds,
+        then let GTK draw and take input before continuing."""
+        deadline = time.monotonic() + DRAIN_BUDGET
+        while True:
+            with self.ready:
+                if not self.inbox or self.closed:
+                    self.draining = False
+                    return
+                item = self.inbox.popleft()
+                # A snapshot replaces the whole state, so one that is already
+                # followed by a newer snapshot would only be work thrown away.
+                stale = item.get("event") == "snapshot" and any(later.get("event") == "snapshot" for later in self.inbox)
+                self.ready.notify_all()
+            if not stale:
+                try:
+                    self.handle(item)
+                except Exception:  # one bad event must not stop the rest
+                    traceback.print_exc(file=sys.stderr)
+            if time.monotonic() >= deadline:
+                self.dispatch(self.drain)
+                return
+
+    def handle(self, data):
+        event = data.get("event")
+        if event == STOPPED:
+            self.event("session", {"state": "error", "message": "核心已停止。請重新啟動程式；未送出的內容仍保留在輸入框。"})
             with self.lock:
                 pending, self.callbacks = self.callbacks, {}
             for callback in pending.values():
-                self.dispatch(callback, {"ok": False, "error": {"message": "核心已停止，傳送結果不明；請確認後再試。"}})
+                callback({"ok": False, "error": {"message": "核心已停止，傳送結果不明；請確認後再試。"}})
+        elif event:
+            payload = data.get("data")
+            self.event(str(event), payload if isinstance(payload, dict) else {})
+        elif "id" in data:
+            with self.lock:
+                callback = self.callbacks.pop(str(data["id"]), None)
+            if callback:
+                callback(data)
 
     def stop(self):
         if self.closed:
             return
         self.closed = True
+        with self.ready:
+            self.ready.notify_all()
         try:
             self.process.terminate()
             self.process.wait(timeout=2)

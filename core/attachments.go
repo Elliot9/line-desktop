@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,12 +88,20 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		if b.catalog != nil && !reload.Reload {
 			return map[string]any{"packs": b.catalog.Packs()}, nil
 		}
-		catalog, err := attachments.LoadCatalog(b.ctx, b.api(), b.region, time.Now(), fetchSticonMeta)
-		if err != nil {
-			return nil, err
-		}
-		b.catalog = catalog
-		return map[string]any{"packs": catalog.Packs()}, nil
+		region := b.region
+		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
+			return attachments.LoadCatalog(ctx, client, region, time.Now(), fetchSticonMeta)
+		}, func(value any, err error) (any, error) {
+			catalog, _ := value.(*attachments.Catalog)
+			if err != nil {
+				return nil, err
+			}
+			if catalog == nil {
+				return nil, errInternal
+			}
+			b.catalog = catalog
+			return map[string]any{"packs": catalog.Packs()}, nil
+		}), nil
 	case "messages.sticker":
 		var p struct {
 			ChatID    string `json:"chat_id"`
@@ -119,6 +126,9 @@ func (b *backend) handleAttachment(req request) (any, error) {
 			msg.StickerID = p.StickerID
 			msg.PackageID = p.PackageID
 		} else {
+			if b.catalog == nil {
+				return nil, fail("sticker_unavailable", "請重新載入並選擇已擁有的貼圖。")
+			}
 			raw, err := b.catalog.StickerMessage(p.ChatID, p.PackageID, p.StickerID)
 			if err != nil {
 				return nil, fail("sticker_unavailable", "請重新載入並選擇已擁有的貼圖。")
@@ -151,35 +161,45 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		if !b.validChat(p.ChatID) {
 			return nil, fail("invalid_params", "請選擇有效的聊天。")
 		}
-		var msg message
 		if b.demo {
 			data, err := attachments.ReadFile(p.Path)
 			if err != nil {
 				return nil, fail("file_error", err.Error())
 			}
-			msg = b.demoSend(p.ChatID, "[示範檔案] "+filepath.Base(p.Path))
+			msg := b.demoSend(p.ChatID, "[示範檔案] "+filepath.Base(p.Path))
 			msg.Kind = "file"
 			msg.Filename = filepath.Base(p.Path)
 			msg.Size = int64(len(data))
-		} else {
-			prepared, err := attachments.PrepareFile(b.ctx, b.api(), p.ChatID, p.Path)
+			b.acceptMessage(msg, true)
+			return map[string]any{"message": msg}, nil
+		}
+		chatID, path := p.ChatID, p.Path
+		// Reading, encrypting and uploading run in the background; only the
+		// send itself needs the event loop.
+		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
+			return attachments.PrepareFile(ctx, client, chatID, path)
+		}, func(value any, err error) (any, error) {
+			prepared, _ := value.(*attachments.PreparedFile)
 			if err != nil {
 				if errors.Is(err, attachments.ErrFileSize) || errors.Is(err, attachments.ErrMediaFlow) {
 					return nil, fail("file_error", err.Error())
 				}
 				return nil, err
 			}
-			raw, err := b.sendPayload(p.ChatID, prepared.ContentType, prepared.Metadata, prepared.Payload)
+			if prepared == nil {
+				return nil, errInternal
+			}
+			raw, err := b.sendPayload(chatID, prepared.ContentType, prepared.Metadata, prepared.Payload)
 			if err != nil {
 				return nil, err
 			}
-			msg = b.convertMessage(raw)
+			msg := b.convertMessage(raw)
 			msg.Filename = prepared.FileName
 			msg.Size = prepared.Size
 			msg.Text = "[檔案] " + prepared.FileName
-		}
-		b.acceptMessage(msg, true)
-		return map[string]any{"message": msg}, nil
+			b.acceptMessage(msg, true)
+			return map[string]any{"message": msg}, nil
+		}), nil
 	case "images.send":
 		// Sends a picture as a LINE photo message (contentType 1), not a file.
 		var p struct {
@@ -192,7 +212,6 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		if !b.validChat(p.ChatID) || p.Path == "" {
 			return nil, fail("invalid_params", "請選擇有效的聊天與圖片。")
 		}
-		var msg message
 		if b.demo {
 			data, err := attachments.ReadFile(p.Path)
 			if err != nil {
@@ -202,45 +221,58 @@ func (b *backend) handleAttachment(req request) (any, error) {
 			if err != nil {
 				return nil, fail("file_error", attachments.ErrNotImage.Error())
 			}
-			msg = b.demoSend(p.ChatID, "[照片]")
+			msg := b.demoSend(p.ChatID, "[照片]")
 			msg.Kind = "image"
 			msg.URL = "file://" + p.Path
 			msg.Width, msg.Height = cfg.Width, cfg.Height
-		} else {
-			prepared, err := attachments.PrepareImage(b.ctx, b.api(), p.ChatID, p.Path, nil)
+			b.acceptMessage(msg, true)
+			return map[string]any{"message": msg}, nil
+		}
+		chatID, path := p.ChatID, p.Path
+		// Decoding, scaling the preview, encrypting and uploading run in the
+		// background; only the send itself needs the event loop.
+		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
+			return attachments.PrepareImage(ctx, client, chatID, path, nil)
+		}, func(value any, err error) (any, error) {
+			prepared, _ := value.(*attachments.PreparedImage)
 			if err != nil {
-				if errors.Is(err, attachments.ErrFileSize) || errors.Is(err, attachments.ErrNotImage) {
+				if errors.Is(err, attachments.ErrFileSize) || errors.Is(err, attachments.ErrNotImage) || errors.Is(err, attachments.ErrImageDimensions) {
 					return nil, fail("file_error", err.Error())
 				}
 				return nil, err
 			}
+			if prepared == nil {
+				return nil, errInternal
+			}
 			var raw *line.Message
 			if prepared.Plain {
-				raw, err = b.sendPlain(p.ChatID, prepared.ContentType, prepared.Metadata)
+				raw, err = b.sendPlain(chatID, prepared.ContentType, prepared.Metadata)
 				if err == nil {
 					if upErr := attachments.PlainUpload(b.api(), raw.ID, prepared.PlainData); upErr != nil {
 						b.notice("照片訊息已送出，但圖片上傳失敗；對方可能看不到照片。")
 					}
 				}
 			} else {
-				raw, err = b.sendPayload(p.ChatID, prepared.ContentType, prepared.Metadata, prepared.Payload)
+				raw, err = b.sendPayload(chatID, prepared.ContentType, prepared.Metadata, prepared.Payload)
 			}
 			if err != nil {
 				return nil, err
 			}
-			msg = b.convertMessage(raw)
+			msg := b.convertMessage(raw)
 			msg.Width, msg.Height = prepared.Width, prepared.Height
+			// Keep the sent picture so the chat shows it without a download.
 			if prepared.PlainData != nil {
-				b.cacheImage(raw.ID, prepared.PlainData)
-			} else if data, readErr := attachments.ReadFile(p.Path); readErr == nil {
-				b.cacheImage(raw.ID, data)
+				b.media.put(mediaKey(raw.ID, false), prepared.PlainData)
+			} else if data, readErr := attachments.ReadFile(path); readErr == nil {
+				b.media.put(mediaKey(raw.ID, false), data)
 			}
-		}
-		b.acceptMessage(msg, true)
-		return map[string]any{"message": msg}, nil
+			b.acceptMessage(msg, true)
+			return map[string]any{"message": msg}, nil
+		}), nil
 	case "images.fetch":
-		// Downloads (and decrypts) a photo into memory and returns it as
-		// base64 so the UI never sees LINE credentials or key material.
+		// Downloads and decrypts a photo into the private media directory and
+		// returns its path. The UI never sees LINE credentials or key
+		// material, and the picture never travels through the JSON pipe.
 		var p struct {
 			ChatID    string `json:"chat_id"`
 			MessageID string `json:"message_id"`
@@ -252,30 +284,63 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		if !b.hasMessage(p.ChatID, p.MessageID) {
 			return nil, fail("invalid_params", "照片不屬於此聊天。")
 		}
-		if data, ok := b.imageCache[p.MessageID]; ok {
-			return map[string]any{"data": base64.StdEncoding.EncodeToString(data)}, nil
+		for _, m := range b.messages[p.ChatID] {
+			if m.ID == p.MessageID && m.Unsent {
+				return nil, fail("image_unavailable", "這則訊息已收回。")
+			}
+		}
+		key := mediaKey(p.MessageID, p.Preview)
+		if path, ok := b.media.get(key); ok {
+			return map[string]any{"path": path}, nil
+		}
+		if p.Preview {
+			// The full picture is already here: no need to fetch a preview.
+			if path, ok := b.media.get(mediaKey(p.MessageID, false)); ok {
+				return map[string]any{"path": path}, nil
+			}
 		}
 		if b.demo {
 			return nil, fail("unsupported", "示範模式沒有 LINE 照片。")
 		}
-		raw := b.rawMessages[p.MessageID]
-		data, err := attachments.DownloadImage(b.ctx, b.api(), raw, b.decryptedPayloads[p.MessageID], p.Preview)
-		if err != nil && p.Preview {
-			data, err = attachments.DownloadImage(b.ctx, b.api(), raw, b.decryptedPayloads[p.MessageID], false)
+		if err := b.recallMessage(p.ChatID, p.MessageID); err != nil {
+			return nil, err
 		}
-		if err != nil {
-			if errors.Is(err, attachments.ErrAuthentication) {
-				return nil, fail("file_authentication", "照片驗證失敗，已停止顯示。")
+		raw, payload, preview := b.rawMessages[p.MessageID], b.decryptedPayloads[p.MessageID], p.Preview
+		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
+			needsToken := raw != nil && raw.ContentMetadata["DOWNLOAD_URL"] == ""
+			return fetchMedia(ctx, client, needsToken, func() ([]byte, error) {
+				data, err := attachments.DownloadImage(ctx, client, raw, payload, preview)
+				if err != nil && preview && ctx.Err() == nil && line.HTTPStatusCode(err) != 401 {
+					data, err = attachments.DownloadImage(ctx, client, raw, payload, false)
+				}
+				return data, err
+			})
+		}, func(value any, err error) (any, error) {
+			if err != nil {
+				var media *mediaFailure
+				if errors.Is(err, attachments.ErrAuthentication) {
+					return nil, fail("file_authentication", "照片驗證失敗，已停止顯示。")
+				}
+				if !errors.As(err, &media) && isAuthError(err) {
+					return nil, err // the token step failed: the login needs attention
+				}
+				return nil, fail("image_unavailable", "無法下載照片，可能已過期。")
 			}
-			if isAuthError(err) {
-				return nil, err
+			for _, m := range b.messages[p.ChatID] {
+				if m.ID == p.MessageID && m.Unsent {
+					return nil, fail("image_unavailable", "這則訊息已收回。") // retracted while downloading
+				}
 			}
-			return nil, fail("image_unavailable", "無法下載照片，可能已過期。")
-		}
-		if !p.Preview {
-			b.cacheImage(p.MessageID, data)
-		}
-		return map[string]any{"data": base64.StdEncoding.EncodeToString(data)}, nil
+			data, _ := value.([]byte)
+			if len(data) == 0 || len(data) > maxImageBytes {
+				return nil, fail("image_unavailable", "無法下載照片，可能已過期。")
+			}
+			path, err := b.media.put(key, data)
+			if err != nil {
+				return nil, fail("image_unavailable", "無法暫存照片，請確認系統暫存空間後再試。")
+			}
+			return map[string]any{"path": path}, nil
+		}), nil
 	case "files.download":
 		var p struct {
 			ChatID    string `json:"chat_id"`
@@ -291,33 +356,43 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		if b.demo {
 			return nil, fail("unsupported", "示範模式不會下載 LINE 的附件。")
 		}
-		raw := b.rawMessages[p.MessageID]
-		err := attachments.DownloadFile(b.ctx, b.api(), raw, b.decryptedPayloads[p.MessageID], p.Path)
-		if err != nil {
-			if errors.Is(err, attachments.ErrAuthentication) {
-				return nil, fail("file_authentication", "附件驗證失敗，已停止下載。")
-			}
+		if err := b.recallMessage(p.ChatID, p.MessageID); err != nil {
 			return nil, err
 		}
-		return map[string]string{"path": p.Path}, nil
+		raw, payload, path := b.rawMessages[p.MessageID], b.decryptedPayloads[p.MessageID], p.Path
+		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
+			return fetchMedia(ctx, client, true, func() ([]byte, error) {
+				return nil, attachments.DownloadFile(ctx, client, raw, payload, path)
+			})
+		}, func(_ any, err error) (any, error) {
+			if err != nil {
+				var media *mediaFailure
+				if errors.Is(err, attachments.ErrAuthentication) {
+					return nil, fail("file_authentication", "附件驗證失敗，已停止下載。")
+				}
+				if errors.As(err, &media) {
+					if isAuthError(media.err) {
+						return nil, fail("file_unavailable", "無法下載附件，可能已過期。")
+					}
+					return nil, media.err
+				}
+				return nil, err
+			}
+			return map[string]string{"path": path}, nil
+		}), nil
 	}
 	return nil, fmt.Errorf("unknown attachment method")
 }
 
-// cacheImage keeps recently viewed or sent photos in memory (≈64 MiB cap) so
-// reopening a chat does not download them again.
-func (b *backend) cacheImage(id string, data []byte) {
-	if b.imageCache == nil {
-		b.imageCache = map[string][]byte{}
+// recallMessage reloads the chat's recent history when the raw message (and
+// with it the media keys) has left the bounded cache while the message is
+// still listed, so an older photo or file can be opened again.
+func (b *backend) recallMessage(chatID, messageID string) error {
+	if b.demo || b.session == nil || b.rawMessages[messageID] != nil {
+		return nil
 	}
-	total := len(data)
-	for _, v := range b.imageCache {
-		total += len(v)
-	}
-	if total > 64<<20 {
-		b.imageCache = map[string][]byte{}
-	}
-	b.imageCache[id] = data
+	_, err := b.listMessages(chatID, 100)
+	return err
 }
 
 func toType(chatID string) int {

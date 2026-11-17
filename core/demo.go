@@ -86,7 +86,7 @@ func (b *backend) seedDemo() {
 		b.data.Chats = append(b.data.Chats, row)
 	}
 	b.sessionEvent("ready", "離線展示。訊息只保留在這次執行，不會傳到 LINE。")
-	b.emit("snapshot", b.data)
+	b.emitSnapshot()
 }
 
 func demoPreview(row chat, m message) string {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"testing"
@@ -37,7 +36,7 @@ func TestGroupMembersAreValidSortedAndCapped(t *testing.T) {
 }
 
 func TestDemoSeedMatchesReferenceDesign(t *testing.T) {
-	b := &backend{out: json.NewEncoder(io.Discard), demo: true, messages: map[string][]message{}, seen: map[string]struct{}{}}
+	b := &backend{out: io.Discard, demo: true, messages: map[string][]message{}, seen: map[string]struct{}{}}
 	b.seedDemo()
 	if b.data.Profile.Name != "林以安" || len(b.data.Chats) != 6 {
 		t.Fatal("demo profile or chats differ from index.html")

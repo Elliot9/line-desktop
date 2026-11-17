@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,7 +32,7 @@ type workerEvent struct {
 type backend struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
-	out               *json.Encoder
+	out               io.Writer
 	demo              bool
 	store             sessionStore
 	events            chan workerEvent
@@ -62,11 +64,46 @@ type backend struct {
 	restoring         bool
 	// forget is set when the user unticked 自動登入: the session then lives
 	// only in memory and any earlier keyring copy is removed.
-	forget          bool
-	imageCache      map[string][]byte
-	region          string
-	savedRevisionAt time.Time
+	forget bool
+	region string
+	// revision is the last LINE operation seen. resync makes the next stream
+	// start over from LINE's current revision instead of replaying from it;
+	// streamSeen is the wall-clock time of the last event the stream sent.
+	revision   int64
+	resync     bool
+	streamSeen time.Time
+	// pendingMessages and dirtyChats collect changes until flush sends them
+	// to the UI as one "messages" and one "chats" event.
+	pendingMessages []message
+	dirtyChats      map[string]struct{}
+	keyMisses       map[string]time.Time
+	media           mediaStore
+	work            context.Context
+	workCancel      context.CancelFunc
+	slots           chan struct{}
+	// obsTokens lets every media download of a session share one OBS token
+	// instead of asking LINE for a new one per photo.
+	obsTokens *line.OBSTokenCache
+	// groupKeys records the group keys handed to the crypto manager, so key
+	// prefetching does not ask LINE for them again.
+	groupKeys map[keyNeed]bool
+	// streamOpened is when the current stream connected (zero once used to
+	// allow one immediate reconnect).
+	streamOpened time.Time
+	// snapshotRetry is when a chat list refresh that failed is tried again.
+	snapshotRetry time.Time
+	snapshotDelay time.Duration
 }
+
+const (
+	// A burst from the stream is collected for at most batchWindow before it
+	// is sent to the UI; batchLinger is how long the loop waits for the next
+	// event of a burst before it sends what it has.
+	batchWindow   = 120 * time.Millisecond
+	batchLinger   = 12 * time.Millisecond
+	maxBatch      = 200
+	maxBatchBytes = 512 << 10
+)
 
 func main() {
 	demo := flag.Bool("demo", false, "Use deterministic offline demo data")
@@ -85,7 +122,16 @@ func main() {
 		return
 	}
 	log.SetOutput(io.Discard)
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// A UI that went away must end the core through a failed write, not
+	// through SIGPIPE, so that the cleanup below (decrypted photos) runs.
+	signal.Ignore(syscall.SIGPIPE)
+	if !*demo {
+		// Photos left by a core that was killed are removed right away.
+		if root := mediaRoot(); privateDir(root) == nil {
+			sweepMedia(root)
+		}
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 	if err := serve(ctx, os.Stdin, os.Stdout, *demo, newKeyringStore()); err != nil {
 		fmt.Fprintln(os.Stderr, "LINE core stopped because the private pipe failed.")
@@ -94,8 +140,10 @@ func main() {
 }
 func serve(parent context.Context, in io.Reader, out io.Writer, demo bool, store sessionStore) error {
 	ctx, cancel := context.WithCancel(parent)
-	b := &backend{ctx: ctx, cancel: cancel, out: json.NewEncoder(out), demo: demo, store: store, events: make(chan workerEvent, 128), state: "logged_out", sequence: time.Now().UnixMilli(), messages: map[string][]message{}, seen: map[string]struct{}{}, data: snapshot{Contacts: []person{}, Chats: []chat{}}}
-	defer func() { cancel(); b.stop(); b.workers.Wait() }()
+	b := &backend{ctx: ctx, cancel: cancel, out: out, demo: demo, store: store, events: make(chan workerEvent, 128), state: "logged_out", sequence: time.Now().UnixMilli(), messages: map[string][]message{}, seen: map[string]struct{}{}, data: snapshot{Contacts: []person{}, Chats: []chat{}}, slots: make(chan struct{}, backgroundJobs)}
+	// The photos go first: only this loop touches the store, and a worker
+	// that is slow to stop must not keep them on disk.
+	defer func() { cancel(); b.stop(); b.media.close(); b.workers.Wait() }()
 	requests := make(chan request)
 	inputErrors := make(chan error, 1)
 	go func() {
@@ -133,7 +181,11 @@ func serve(parent context.Context, in io.Reader, out io.Writer, demo bool, store
 			if !ok {
 				return nil
 			}
-			result, err, done := b.handle(req)
+			result, err, done := b.serveRequest(req)
+			b.flush()
+			if _, later := result.(deferred); later && err == nil {
+				continue // a background worker replies when it is done
+			}
 			if err := b.reply(req.ID, result, err); err != nil {
 				return err
 			}
@@ -141,25 +193,173 @@ func serve(parent context.Context, in io.Reader, out io.Writer, demo bool, store
 				return nil
 			}
 		case ev := <-b.events:
-			b.handleEvent(ev)
+			b.step(ev)
 		case <-ticker.C:
 			b.tick()
+			b.flush()
 		}
 	}
 }
+
+// serveRequest answers one request. A panic in a handler becomes a failed
+// request: the core is the only connection to LINE, and letting it die turns
+// one bad message or reply into "核心已停止" for the whole app.
+func (b *backend) serveRequest(req request) (result any, err error, done bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			reportPanic(p)
+			result, err, done = nil, errInternal, false
+		}
+	}()
+	return b.handle(req)
+}
+
+func (b *backend) serveEvent(ev workerEvent) {
+	defer func() {
+		if p := recover(); p != nil {
+			reportPanic(p)
+		}
+	}()
+	b.handleEvent(ev)
+}
+
+// reportPanic writes to stderr, which is only read when the core is run by
+// hand; a stack trace holds no message text, tokens or keys.
+func reportPanic(p any) {
+	fmt.Fprintf(os.Stderr, "LINE core recovered from an internal error: %v\n%s\n", p, debug.Stack())
+}
+
+// step handles one worker event and what queued up behind it, then sends
+// the result to the UI as one batch.
+func (b *backend) step(ev workerEvent) {
+	b.serveEvent(ev)
+	b.drainEvents()
+	b.flush()
+}
+
+// drainEvents keeps handling worker events for a moment after one arrived, so
+// a burst of stream operations reaches the UI as one batch instead of one
+// update (and one redraw of the chat list) per message.
+func (b *backend) drainEvents() {
+	if len(b.pendingMessages) == 0 && len(b.dirtyChats) == 0 {
+		return
+	}
+	deadline := time.Now().Add(batchWindow)
+	linger := time.NewTimer(batchLinger)
+	defer linger.Stop()
+	for len(b.pendingMessages) < maxBatch && time.Now().Before(deadline) {
+		select {
+		case ev := <-b.events:
+			b.serveEvent(ev)
+			linger.Reset(batchLinger)
+		case <-linger.C:
+			return
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// touchChat marks a chat row as changed; flush sends it to the UI.
+func (b *backend) touchChat(id string) {
+	if b.dirtyChats == nil {
+		b.dirtyChats = map[string]struct{}{}
+	}
+	b.dirtyChats[id] = struct{}{}
+}
+
+// flushMessages sends the buffered messages. rows, the chat rows they
+// changed, travel with the first batch: the UI applies them before the
+// messages, so it knows a chat before its first message, and it takes unread
+// counts from rows (or a snapshot) instead of counting messages itself.
+func (b *backend) flushMessages(rows []chat) {
+	batch := b.pendingMessages
+	b.pendingMessages = nil
+	if rows == nil {
+		rows = []chat{}
+	}
+	for len(batch) > 0 {
+		n, size := 0, 0
+		for n < len(batch) && n < maxBatch {
+			size += len(batch[n].Text) + 512
+			if n > 0 && size > maxBatchBytes {
+				break
+			}
+			n++
+		}
+		b.emit("messages", map[string]any{"messages": batch[:n], "chats": rows})
+		rows = []chat{}
+		batch = batch[n:]
+	}
+}
+
+// flush sends buffered messages and the chat rows that changed. The whole
+// snapshot (every contact, chat and group member) used to be sent after each
+// message, which is megabytes per second during a burst.
+func (b *backend) flush() {
+	rows := make([]chat, 0, len(b.dirtyChats))
+	if len(b.dirtyChats) > 0 {
+		for _, c := range b.data.Chats {
+			if _, ok := b.dirtyChats[c.ID]; ok {
+				rows = append(rows, c)
+			}
+		}
+	}
+	b.dirtyChats = nil
+	if len(b.pendingMessages) > 0 {
+		b.flushMessages(rows)
+	} else if len(rows) > 0 {
+		b.emit("chats", map[string]any{"chats": rows})
+	}
+}
+
+// emitSnapshot sends the whole state, then any buffered messages (their chat
+// rows are part of the snapshot).
+func (b *backend) emitSnapshot() {
+	b.dirtyChats = nil
+	b.emit("snapshot", b.data)
+	b.flushMessages(nil)
+}
+
+// maxOutput bounds one line written to the UI, which refuses longer ones.
+// Nothing legitimate comes close: photos travel as files, not through the pipe.
+const maxOutput = 32 << 20
+
+var errOversize = errors.New("envelope exceeds the output limit")
+
+// send writes one envelope as a single line.
+func (b *backend) send(envelope map[string]any) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	if len(raw) >= maxOutput {
+		return errOversize
+	}
+	_, err = b.out.Write(append(raw, '\n'))
+	return err
+}
 func (b *backend) emit(event string, data any) {
-	if b.out.Encode(map[string]any{"event": event, "data": data}) != nil {
+	err := b.send(map[string]any{"event": event, "data": data})
+	if errors.Is(err, errOversize) {
+		err = b.send(map[string]any{"event": "notice", "data": map[string]string{"level": "error", "message": "資料過大，部分內容無法顯示。"}})
+	}
+	if err != nil {
 		b.cancel()
 	}
 }
 func (b *backend) reply(id string, result any, err error) error {
 	if err != nil {
-		return b.out.Encode(map[string]any{"id": id, "ok": false, "error": userError(err)})
+		return b.send(map[string]any{"id": id, "ok": false, "error": userError(err)})
 	}
 	if result == nil {
 		result = struct{}{}
 	}
-	return b.out.Encode(map[string]any{"id": id, "ok": true, "result": result})
+	err = b.send(map[string]any{"id": id, "ok": true, "result": result})
+	if errors.Is(err, errOversize) {
+		err = b.send(map[string]any{"id": id, "ok": false, "error": &fault{"response_too_large", "回應資料過大，無法顯示。"}})
+	}
+	return err
 }
 func (b *backend) sessionEvent(state, text string) {
 	b.state = state
@@ -179,6 +379,12 @@ func (b *backend) stop() {
 		b.loginCancel = nil
 	}
 	b.stopStream()
+	if b.workCancel != nil {
+		b.workCancel()
+		b.work, b.workCancel = nil, nil
+	}
+	b.obsTokens, b.groupKeys = nil, nil
+	b.snapshotRetry, b.snapshotDelay = time.Time{}, 0
 	if b.crypto != nil {
 		b.crypto.Close()
 		b.crypto = nil
@@ -196,7 +402,11 @@ func (b *backend) clearData() {
 	b.decryptedPayloads = nil
 	b.catalog = nil
 	b.region = ""
-	b.emit("snapshot", b.data)
+	b.pendingMessages = nil
+	b.dirtyChats = nil
+	b.keyMisses = nil
+	b.media.close()
+	b.emitSnapshot()
 }
 func (b *backend) enqueue(ctx context.Context, ev workerEvent) {
 	select {
@@ -300,7 +510,7 @@ func (b *backend) handle(req request) (any, error, bool) {
 			return nil, err, false
 		}
 		if b.demo {
-			b.emit("snapshot", b.data)
+			b.emitSnapshot()
 			return nil, nil, false
 		}
 		err := b.refreshSnapshot()
@@ -387,11 +597,11 @@ func (b *backend) handle(req request) (any, error, bool) {
 		}
 		if err == nil {
 			for i := range b.data.Chats {
-				if b.data.Chats[i].ID == p.ChatID {
+				if b.data.Chats[i].ID == p.ChatID && b.data.Chats[i].Unread != 0 {
 					b.data.Chats[i].Unread = 0
+					b.touchChat(p.ChatID)
 				}
 			}
-			b.emit("snapshot", b.data)
 		}
 		b.handleAuthError(err)
 		return nil, err, false
@@ -451,7 +661,7 @@ func (b *backend) handle(req request) (any, error, bool) {
 				}
 			}
 			b.data.Chats = kept
-			b.emit("snapshot", b.data)
+			b.emitSnapshot()
 		}
 		b.handleAuthError(err)
 		return nil, err, false
@@ -474,8 +684,8 @@ func (b *backend) handle(req request) (any, error, bool) {
 				}
 			}
 			c.Unread = 0
+			b.touchChat(c.ID)
 		}
-		b.emit("snapshot", b.data)
 		b.handleAuthError(firstErr)
 		return nil, firstErr, false
 	case "stickers.list", "messages.sticker", "files.send", "files.download", "images.send", "images.fetch":
@@ -572,7 +782,7 @@ func (b *backend) acceptMessage(m message, notify bool) {
 		b.data.Chats = append(b.data.Chats, row)
 	}
 	if notify {
-		b.emit("message", map[string]any{"message": m})
-		b.emit("snapshot", b.data)
+		b.pendingMessages = append(b.pendingMessages, m)
+		b.touchChat(m.ChatID)
 	}
 }

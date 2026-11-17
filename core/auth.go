@@ -356,8 +356,14 @@ func mergeKeys(previous, current map[string]string) map[string]string {
 	return result
 }
 func (b *backend) handleEvent(ev workerEvent) {
-	if ev.kind == "stream" || ev.kind == "stream_error" {
+	if ev.kind == "stream" || ev.kind == "stream_error" || ev.kind == "stream_resync" {
 		b.handleStreamEvent(ev)
+		return
+	}
+	if ev.kind == "done" {
+		if result, ok := ev.data.(workResult); ok {
+			b.finishWork(ev.generation, result)
+		}
 		return
 	}
 	if ev.generation != b.generation {
@@ -410,15 +416,21 @@ func (b *backend) handleEvent(ev workerEvent) {
 	b.region = p.RegionCode
 	b.data.Profile = &person{ID: p.Mid, Name: p.DisplayName, Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath)}
 	b.saveSession()
-	if b.session.Revision == 0 {
-		if rev, err := b.api().GetLastOpRevisionContext(b.ctx); err == nil {
-			b.session.Revision = rev
-		}
+	// The stream starts from LINE's current revision, as upstream beeper/line
+	// does. Nothing is kept in memory across runs and the snapshot below
+	// already reports unread counts and the last message of every chat, so
+	// resuming from a revision saved by an earlier run only made LINE replay
+	// every operation since then. If the revision cannot be fetched now, the
+	// stream worker fetches it (and refreshes the chat list) before listening.
+	b.revision, b.resync, b.streamSeen = 0, true, time.Time{}
+	if rev, err := b.api().GetLastOpRevisionContext(b.ctx); err == nil {
+		b.revision, b.resync = rev, false
 	}
 	b.preservePhoneNotifications()
 	b.pushPreserved = true
-	if err := b.refreshSnapshot(); err != nil {
-		b.notice("登入成功，但聊天清單暫時無法同步。請稍後重新整理。")
+	b.syncSnapshot()
+	if b.session == nil {
+		return // the login was refused while loading the chat list
 	}
 	b.sessionEvent("ready", "已連線至 LINE。")
 	b.startStream()

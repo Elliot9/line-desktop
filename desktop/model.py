@@ -10,6 +10,8 @@ import uuid
 
 KEEP_ID = "keep"
 KEEP_LIMIT = 1000
+# Messages kept per chat in memory; older ones are loaded from LINE on demand.
+HISTORY_LIMIT = 2000
 DEMO_PINNED = ("demo-weekend", "demo-yiting")
 DEMO_FAVORITES = ("demo-yiting", "demo-hao")
 DEMO_KEEP = "記下生活裡的小靈感 ✍️\n想去的地方、突然想到的點子，都放在這裡。"
@@ -43,14 +45,36 @@ class State:
         self.contacts = {str(c["id"]): c for c in data.get("contacts", [])}
         self.people.update({str(k): v for k, v in (data.get("people") or {}).items()})
         keep = self.chats.get(KEEP_ID)
+        # A chat the user just opened with a friend exists only here until
+        # its first message; LINE does not list it yet.
+        opened = self.chats.get(self.selected) if self.selected else None
         self.chats = {str(c["id"]): c for c in data.get("chats", [])}
         for chat_id, chat in self.chats.items():
-            history = self.messages.get(chat_id)
-            if history and history[-1].get("time", 0) >= int(chat.get("updated_at", 0) or 0):
-                chat["last_message"] = preview(history[-1], chat)
-                chat["updated_at"] = history[-1].get("time", 0)
+            self.reconcile(chat_id, chat)
         if keep:
             self.chats[KEEP_ID] = keep
+        if opened and opened.get("local") and self.selected not in self.chats:
+            self.chats[self.selected] = opened
+
+    def reconcile(self, chat_id, chat):
+        """A row from the core may be older than the newest message shown."""
+        history = self.messages.get(chat_id)
+        if history and history[-1].get("time", 0) >= int(chat.get("updated_at", 0) or 0):
+            chat["last_message"] = preview(history[-1], chat)
+            chat["updated_at"] = history[-1].get("time", 0)
+
+    def update_chats(self, rows):
+        """Applies the chat rows of a "chats" event (only the rows that
+        changed, where a snapshot carries the whole account). Returns their ids."""
+        changed = []
+        for chat in rows:
+            if not isinstance(chat, dict) or not chat.get("id") or chat["id"] == KEEP_ID:
+                continue
+            chat_id = str(chat["id"])
+            self.reconcile(chat_id, chat)
+            self.chats[chat_id] = chat
+            changed.append(chat_id)
+        return changed
 
     def name_of(self, person_id):
         if person_id and person_id == self.profile.get("id"):
@@ -71,7 +95,10 @@ class State:
         chat = self.chats.get(person_id)
         return chat.get("avatar", "") if chat and chat.get("kind") == "direct" else ""
 
-    def add_message(self, message):
+    def add_message(self, message, count=True):
+        """Adds or replaces a message; returns True when it is new. count is
+        False when the core sends the chat's row along with the message: the
+        unread count then comes from that row."""
         chat_id = str(message.get("chat_id", ""))
         message_id = str(message.get("id", ""))
         if not chat_id or not message_id:
@@ -82,12 +109,15 @@ class State:
                 history[index] = message
                 return False
         history.append(message)
-        history.sort(key=lambda item: item.get("time", 0))
+        if len(history) > 1 and history[-2].get("time", 0) > message.get("time", 0):
+            history.sort(key=lambda item: item.get("time", 0))
+        if len(history) > HISTORY_LIMIT:
+            del history[:len(history) - HISTORY_LIMIT]
         chat = self.chats.get(chat_id)
         if chat and history[-1] is message:
             chat["last_message"] = preview(message, chat)
             chat["updated_at"] = message.get("time", 0)
-            if not message.get("mine") and chat_id != self.selected:
+            if count and not message.get("mine") and chat_id != self.selected:
                 chat["unread"] = int(chat.get("unread", 0)) + 1
         return True
 
