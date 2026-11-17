@@ -10,18 +10,20 @@ import uuid
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, GObject, Gtk
+gi.require_version("Graphene", "1.0")
+from gi.repository import Gdk, Gio, GLib, GObject, Graphene, Gtk
 
 from . import art
 from . import avatar as avatar_module
+from . import launcher
 from . import ui as ui_module
 from .art import Art, BASIC_EMOJI, MOODS
 from .ipc import Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
 from .photos import Photos
 from .pictures import Pictures
-from .ui import (H, V, Responsive, box, button, chat_avatar, clear, dot, file_badge, file_size,
-                 icon, icon_button, icon_text, label, person_avatar, scroller, set_accessible_label)
+from .ui import (H, V, Responsive, box, button, chat_avatar, clear, dot, file_badge, file_size, file_title,
+                 icon, icon_button, icon_text, label, linkify, person_avatar, scroller, set_accessible_label)
 
 ASSETS = Path(__file__).with_name("assets")
 # Core messages that only mean "you are on the login page"; not shown as errors.
@@ -111,7 +113,7 @@ class InlineEmoji(GObject.Object, Gdk.Paintable):
 
 class Application(Gtk.Application):
     def __init__(self, options):
-        app_id = "org.matrixline.Desktop.Demo" if options.demo else "org.matrixline.Desktop.Live"
+        app_id = launcher.DEMO_ID if options.demo else launcher.LIVE_ID
         if options.smoke_test:
             app_id += ".Smoke" + uuid.uuid4().hex[:8]
         super().__init__(application_id=app_id, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
@@ -135,7 +137,6 @@ class Application(Gtk.Application):
         self.restoring = False
         self.modal = None
         self.modal_kind = ""
-        self.popover_message = None
         self.collapsed = {"official"}
         self.stick_bottom = True
         self.recent_stickers = [] if self.options.demo else list(self.prefs.settings["recent_stickers"])
@@ -152,18 +153,21 @@ class Application(Gtk.Application):
         self.history_limit = HISTORY_PAGE
         self.rendered = None
         self.notify_times = collections.deque()
+        # Notifications on screen: notification id -> chat id ("" for the
+        # summary). Taken back as soon as their chat has nothing unread.
+        self.notified = {}
         self.summary_count = 0
         self.summary_shown = 0
         self.summary_timer = 0
         self.read_marks = {}
         self.sticker_textures = {}
         self.sticker_waiting = {}
-        self.context_menus = {}
         self.reload_due = False
         self.temp_images = set()
         self.replying = None
         self.screenshot_signal = 0
         self.context_popover = None
+        self.context_selection = ""
         self.toast_timer = 0
         self.width_class = ""
         self.bubble_chars = 60
@@ -246,6 +250,16 @@ class Application(Gtk.Application):
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.window_key)
         self.window.add_controller(keys)
+        # Selected message text is dropped, with its focus, by a click
+        # anywhere else; focus coming back to a message (when a menu
+        # closes) must not select all of it.
+        clicks = Gtk.GestureClick(button=0)
+        clicks.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        clicks.connect("pressed", self.window_pressed)
+        self.window.add_controller(clicks)
+        settings = Gtk.Settings.get_default()
+        if settings is not None and settings.find_property("gtk-label-select-on-focus"):
+            settings.set_property("gtk-label-select-on-focus", False)
         self.pages.set_visible_child_name("login")
         self.show_restoring(not self.options.demo)
         self.window.present()
@@ -259,6 +273,13 @@ class Application(Gtk.Application):
             self.login_message("核心尚未啟動。請關閉後重新開啟程式。")
         if self.options.smoke_test:
             GLib.timeout_add(250, self.smoke_tick)
+        elif not self.options.demo:
+            # An update may change the launcher (its dock menu); keep the
+            # installed one current. Off the startup path.
+            def refresh_launcher():
+                launcher.refresh()
+                return GLib.SOURCE_REMOVE
+            GLib.idle_add(refresh_launcher)
 
     def open_chat_action(self, _action, value):
         chat_id = value.get_string()
@@ -366,8 +387,8 @@ class Application(Gtk.Application):
         menu_button.add_css_class("login-tool")
         menu_button.set_child(icon("menu", 22))
         menu_button.set_tooltip_text("選單")
-        menu = Gtk.Popover(has_arrow=False)
-        menu.add_css_class("line-popover")
+        menu = self.popover()
+        menu.add_css_class("menu-list")
         items = box(V, 0)
         for title, callback in (("使用說明", self.open_help), ("結束 LINE", self.quit)):
             items.append(button(label(title), lambda action=callback: (menu.popdown(), action()), None))
@@ -552,8 +573,8 @@ class Application(Gtk.Application):
         self.more_button.set_tooltip_text("更多")
         self.more_button.set_halign(CENTER)
         self.more_button.set_direction(Gtk.ArrowType.RIGHT)
-        menu = Gtk.Popover(has_arrow=False)
-        menu.add_css_class("line-popover")
+        menu = self.popover()
+        menu.add_css_class("menu-list")
         items = box(V, 0)
         for title, callback in (("設定", self.open_settings), ("使用說明", self.open_help), ("登出", self.logout), ("結束 LINE", self.quit)):
             items.append(button(label(title), lambda action=callback: (menu.popdown(), action()), None))
@@ -659,15 +680,6 @@ class Application(Gtk.Application):
         vertical = self.history_scroll.get_vadjustment()
         vertical.connect("changed", self.history_resized)
         vertical.connect("value-changed", self.history_scrolled)
-        self.menu = Gtk.Popover(has_arrow=False, autohide=True)
-        self.menu.add_css_class("line-popover")
-        display = Gdk.Display.get_default()
-        if display is not None and not display.is_composited():
-            self.menu.add_css_class("flat")
-        self.menu.set_position(Gtk.PositionType.BOTTOM)
-        self.menu.set_parent(conversation)
-        self.conversation = conversation
-        self.menu.connect("closed", lambda *_: self.menu_closed())
         conversation_layer = Gtk.Overlay()
         conversation_layer.set_child(self.history_scroll)
         self.drag_overlay = label("放開檔案，分享此刻的小美好。", "drag-overlay", xalign=0.5)
@@ -740,8 +752,7 @@ class Application(Gtk.Application):
         toolbar.append(box(hexpand=True))
         self.sticker_button = icon_button("smile", self.open_stickers, "貼圖、表情貼", 21)
         toolbar.append(self.sticker_button)
-        self.sticker_popover = Gtk.Popover(has_arrow=False, autohide=True, position=Gtk.PositionType.TOP)
-        self.sticker_popover.add_css_class("line-popover")
+        self.sticker_popover = self.popover(position=Gtk.PositionType.TOP)
         self.sticker_popover.set_parent(self.sticker_button)
         self.sticker_popover.connect("closed", lambda *_: self.compose.grab_focus())
         send_icon = icon("send", 16)
@@ -824,6 +835,16 @@ class Application(Gtk.Application):
         unread = sum(int(chat.get("unread") or 0) for chat in self.state.chats.values() if not self.chat_muted(chat))
         self.navdot.set_text("99+" if unread > 99 else str(unread))
         self.navdot.set_visible(unread > 0)
+        self.withdraw_read_notifications()
+
+    def withdraw_read_notifications(self):
+        """A notification stays only while its chat is unread: read here,
+        on the phone or marked read, it is taken back. (GNOME's dock shows
+        how many notifications LINE has on screen as its badge.)"""
+        for key, chat_id in list(self.notified.items()):
+            chat = self.state.chats.get(chat_id)
+            if chat_id and not (chat and chat.get("unread") and not self.chat_muted(chat)):
+                self.take_back_notification(key)
 
     def chat_muted(self, chat):
         return bool(chat.get("muted")) or self.prefs.has("muted", chat.get("id"))
@@ -1123,46 +1144,73 @@ class Application(Gtk.Application):
         # message bubble ever built then stays in memory.
         def show(gesture, x, y):
             target = gesture.get_widget()
-            entries = options()
-            if not entries or target is None:
+            if target is None:
                 return
-            # Menus whose row left the window without the menu closing.
-            for stale, owner in list(self.context_menus.items()):
-                if owner.get_root() is None:
-                    self.detach_menu(stale)
-            popover = Gtk.Popover(has_arrow=False)
-            popover.add_css_class("line-popover")
-            contents = box(V, 0)
-            for glyph, title, callback in entries:
-                item = button(icon_text(glyph, title, 14, 9), None, "danger" if glyph == "trash" else None)
-                item.connect("clicked", lambda source, action=callback: (source.get_ancestor(Gtk.Popover).popdown(), action()))
-                contents.append(item)
-            popover.set_child(contents)
-            popover.set_parent(target)
-            rect = Gdk.Rectangle()
-            rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
-            popover.set_pointing_to(rect)
-            popover.set_position(Gtk.PositionType.BOTTOM)
-            # The row must outlive its menu: choosing an item usually redraws
-            # the list, and a row freed with the menu still attached crashes
-            # GTK. The reference is held here, not by the row's own handlers,
-            # and is dropped as soon as the menu is detached.
-            self.context_menus[popover] = target
-            popover.connect("closed", lambda source: GLib.idle_add(self.detach_menu, source))
-            self.context_popover = popover
-            popover.popup()
+            # Selected words of a message: 複製 copies just those.
+            self.context_selection = selected_text(target)
+            entries = options()
+            if not entries:
+                return
+            # Message text is selectable, and GtkLabel has a menu of its own
+            # (剪下／複製／貼上…) that would open instead of this one.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self.open_context_menu(target, x, y, entries)
         click = Gtk.GestureClick(button=3)
+        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         click.connect("pressed", lambda gesture, n, x, y: show(gesture, x, y))
         widget.add_controller(click)
         press = Gtk.GestureLongPress(touch_only=True)
         press.connect("pressed", lambda gesture, x, y: show(gesture, x, y))
         widget.add_controller(press)
 
+    def open_context_menu(self, target, x, y, entries):
+        """Shows entries [(icon, title, callback)] as a menu at (x, y) in
+        target's coordinates; returns the menu."""
+        # The menu hangs off the window, not the row: a row's styles (an own
+        # bubble's dark text) would otherwise reach the menu, and redrawing
+        # the list would take the menu down with the row.
+        anchor = self.overlay
+        found, point = target.compute_point(anchor, Graphene.Point().init(x, y))
+        if not found:
+            return None
+        if self.context_popover is not None:
+            self.context_popover.popdown()
+        # Like LINE PC (and any desktop context menu) the menu opens with its
+        # top-left corner at the pointer; GTK flips it above or to the left
+        # when there is no room below or to the right.
+        popover = self.popover(position=Gtk.PositionType.BOTTOM, halign=START)
+        popover.add_css_class("menu-list")
+        contents = box(V, 0)
+        for glyph, title, callback in entries:
+            item = button(icon_text(glyph, title, 14, 9), None, "danger" if glyph == "trash" else None)
+            item.connect("clicked", lambda source, action=callback: (source.get_ancestor(Gtk.Popover).popdown(), action()))
+            contents.append(item)
+        popover.set_child(contents)
+        popover.set_parent(anchor)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(point.x), int(point.y), 1, 1
+        popover.set_pointing_to(rect)
+        popover.connect("closed", lambda source: GLib.idle_add(self.detach_menu, source))
+        self.context_popover = popover
+        popover.popup()
+        return popover
+
+    def popover(self, **properties):
+        """A LINE-style popover menu or panel. Its shadow needs a compositor:
+        without one GTK paints the shadow's margin opaque, a black frame
+        around the menu, so the menu is drawn flat there instead."""
+        popover = Gtk.Popover(has_arrow=False, autohide=True, **properties)
+        popover.add_css_class("line-popover")
+        display = Gdk.Display.get_default()
+        if display is not None and not display.is_composited():
+            popover.add_css_class("flat")
+        return popover
+
     def detach_menu(self, popover):
-        owner = self.context_menus.pop(popover, None)  # alive until unparented
+        if self.context_popover is popover:
+            self.context_popover = None
         if popover.get_parent() is not None:
             popover.unparent()
-        del owner
         return GLib.SOURCE_REMOVE
 
     # --------------------------------------------------------------- chat view
@@ -1209,9 +1257,18 @@ class Application(Gtk.Application):
             if response.get("ok"):
                 if replace:
                     self.state.messages[chat_id] = [m for m in self.state.messages.get(chat_id, []) if str(m.get("id", "")).startswith("pending-")]
-                for message in response.get("result", {}).get("messages", []):
+                result = response.get("result", {})
+                for message in result.get("messages", []):
                     # History is not news: unread counts come from the core.
                     self.state.add_message(message, count=False)
+                # How far each member has read, including before LINE was
+                # started here: older messages get their 已讀 too.
+                chat = self.state.chats.get(chat_id)
+                if chat is not None and isinstance(result.get("read_by"), dict):
+                    readers = chat.get("read_by") or {}
+                    for reader, at in result["read_by"].items():
+                        readers[reader] = max(int(readers.get(reader, 0) or 0), int(at or 0))
+                    chat["read_by"] = readers
                 if self.state.selected == chat_id:
                     if chat_id in self.state.chats:
                         self.state.chats[chat_id]["unread"] = 0
@@ -1502,14 +1559,20 @@ class Application(Gtk.Application):
             if start > cursor:
                 for word in "".join(chars[cursor:start]).split("\n"):
                     if word:
-                        flow.insert(label(word, "emoji-text"), -1)
+                        flow.insert(self.emoji_text_part(word), -1)
             flow.insert(self.sticker_picture(run.get("url", ""), size, size), -1)
             cursor = max(cursor, end)
         if cursor < len(chars):
             rest = "".join(chars[cursor:])
             if rest.strip():
-                flow.insert(label(rest, "emoji-text"), -1)
+                flow.insert(self.emoji_text_part(rest), -1)
         return flow, only_emoji
+
+    @staticmethod
+    def emoji_text_part(text):
+        part = label(text, "emoji-text")
+        linkify(part, text)
+        return part
 
     def reply_quote(self, message, by_id):
         target = by_id.get(message.get("reply_to"))
@@ -1536,17 +1599,26 @@ class Application(Gtk.Application):
             return self.image_bubble(message)
         if kind == "file":
             holder = box(V, 0, "bubble file-bubble")
-            attachment = box(H, 11, "attachment")
-            attachment.set_size_request(215, -1)
+            attachment = box(H, 12, "attachment")
+            attachment.set_size_request(240, -1)
             attachment.append(file_badge(message.get("filename")))
-            names = box(V, 0, valign=CENTER, hexpand=True)
-            names.append(label(message.get("filename") or "檔案", "file-name", wrap=True, max_chars=26))
-            names.append(label(file_size(message.get("size")), "file-size"))
+            names = box(V, 2, valign=CENTER, hexpand=True)
+            names.append(file_title(message.get("filename") or "檔案"))
+            expires = local_time(int(message.get("expires") or 0))
+            if expires:
+                names.append(label(f"有效期限：{expires.year}/{expires.month:02d}/{expires.day:02d}", "file-size"))
+            if int(message.get("size") or 0) > 0:
+                names.append(label("檔案大小：" + file_size(message.get("size")), "file-size"))
             attachment.append(names)
             download = icon_button("download", lambda item=message: self.download_file(item), "另存新檔", 15)
             download.set_valign(CENTER)
             attachment.append(download)
             holder.append(attachment)
+            # Clicking the card saves the file, as in LINE.
+            click = Gtk.GestureClick(button=1)
+            click.connect("released", lambda _gesture, presses, *_, item=message: presses == 1 and self.download_file(item))
+            holder.add_controller(click)
+            holder.set_cursor_from_name("pointer")
             return holder
         holder = box(V, 4, "bubble")
         holder.set_halign(END if own else START)
@@ -1561,6 +1633,8 @@ class Application(Gtk.Application):
             return holder
         text = message.get("text") or media_label(message)
         body = label(text, "bubble-text", wrap=True, max_chars=self.bubble_chars, selectable=True)
+        if kind == "text":
+            linkify(body, text)
         holder.append(body)
         return holder
 
@@ -1774,7 +1848,8 @@ class Application(Gtk.Application):
             return options
         pending = str(message.get("id", "")).startswith("pending-")
         if kind == "text" and message.get("text"):
-            options.append(("copy", "複製", lambda: self.copy_text(str(message.get("text", "")).replace("\ufffc", ""))))
+            options.append(("copy", "複製", lambda: self.copy_text(
+                self.context_selection or str(message.get("text", "")).replace("\ufffc", ""))))
         if kind == "image":
             options.append(("copy", "複製", lambda: self.copy_image(message)))
             options.append(("download", "另存新檔", lambda: self.save_image(message)))
@@ -1822,26 +1897,6 @@ class Application(Gtk.Application):
                 self.after_message(message.get("chat_id") or self.state.selected)
             self.core.request("messages.unsend", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message["id"]}, done)
         self.open_modal("unsend", "要收回訊息嗎？", body, self.modal_actions(unsend, "收回"))
-
-    def show_menu(self, source, message):
-        options = self.message_menu(message, self.current_chat())
-        if not options:
-            return
-        contents = box(V, 0)
-        for glyph, title, callback in options:
-            contents.append(button(icon_text(glyph, title, 14, 9), lambda action=callback: (self.menu.popdown(), action()), None))
-        self.menu.set_child(contents)
-        ok, bounds = source.compute_bounds(self.conversation)
-        if ok:
-            rect = Gdk.Rectangle()
-            rect.x, rect.y = int(bounds.get_x()), int(bounds.get_y())
-            rect.width, rect.height = int(bounds.get_width()), int(bounds.get_height())
-            self.menu.set_pointing_to(rect)
-        self.popover_message = source
-        self.menu.popup()
-
-    def menu_closed(self):
-        self.popover_message = None
 
     def copy_text(self, text):
         self.window.get_clipboard().set(text)
@@ -2277,8 +2332,9 @@ class Application(Gtk.Application):
             row = box(H, 8, "detail-file")
             row.append(file_badge(message.get("filename"), True))
             names = box(V, 0, hexpand=True)
-            names.append(label(message.get("filename") or "檔案", "file-name", wrap=True, max_chars=18))
-            names.append(label(file_size(message.get("size")), "file-size"))
+            names.append(file_title(message.get("filename") or "檔案", max_chars=18))
+            if int(message.get("size") or 0) > 0:
+                names.append(label(file_size(message.get("size")), "file-size"))
             row.append(names)
             download = icon_button("download", lambda item=message: self.download_file(item), "另存檔案", 14)
             download.set_valign(CENTER)
@@ -2350,11 +2406,24 @@ class Application(Gtk.Application):
         wrapper.error_label = message
         return wrapper
 
+    def window_pressed(self, gesture, _presses, x, y):
+        focus = self.window.get_focus()
+        if not isinstance(focus, Gtk.Label) or not focus.get_selectable():
+            return
+        picked = self.window.pick(x, y, Gtk.PickFlags.DEFAULT)
+        if picked is not None and (picked is focus or picked.is_ancestor(focus)):
+            return  # selecting again, or following a link, in the same text
+        bubble = focus
+        while bubble is not None and not bubble.has_css_class("bubble"):
+            bubble = bubble.get_parent()
+        if (gesture.get_current_button() == 3 and bubble is not None and picked is not None
+                and (picked is bubble or picked.is_ancestor(bubble))):
+            return  # the message's own menu: 複製 copies the selection
+        focus.select_region(0, 0)
+        self.window.set_focus(None)
+
     def window_key(self, controller, keyval, keycode, modifiers):
         if keyval == Gdk.KEY_Escape:
-            if self.menu.get_visible():
-                self.menu.popdown()
-                return True
             if self.modal:
                 self.close_modal()
                 return True
@@ -3444,7 +3513,7 @@ class Application(Gtk.Application):
                 else:
                     row.append(file_badge(item["name"]))
                 names = box(V, 0, valign=CENTER, hexpand=True)
-                names.append(label(item["name"], "queue-name", wrap=True))
+                names.append(file_title(item["name"], "queue-name", max_chars=30))
                 size = label(file_size(item["size"]), "subtle")
                 size.set_margin_top(5)
                 names.append(size)
@@ -3540,7 +3609,7 @@ class Application(Gtk.Application):
                 self.state.chats[chat_id]["unread"] = 0
                 self.render_list()
                 self.render_rail()
-            self.withdraw_notification("chat-" + str(chat_id)[:64])
+            self.take_back_notification("chat-" + str(chat_id)[:64])
             self.mark_read()
 
     def mark_read(self):
@@ -3578,7 +3647,8 @@ class Application(Gtk.Application):
                 dialog.close()
         self.dialogs.clear()
         self.close_modal()
-        self.menu.popdown()
+        if self.context_popover is not None:
+            self.context_popover.popdown()
         self.sticker_popover.popdown()
         self.state.clear()
         self.photos.clear()
@@ -3679,6 +3749,7 @@ class Application(Gtk.Application):
                 return
             self.state.snapshot(data)
             self.load_local()
+            self.forget_saved_notifications()
             selected = self.state.selected
             if not selected or selected not in self.state.chats:
                 # LINE opens on a blank pane: opening a chat is always the
@@ -3855,12 +3926,12 @@ class Application(Gtk.Application):
         notification = Gio.Notification.new("LINE")
         notification.set_body(f"還有 {self.summary_count} 則新訊息")
         notification.set_default_action_and_target("app.open-chat", GLib.Variant.new_string(""))
-        self.send_notification("new-messages", notification)
+        self.show_notification("new-messages", notification)
 
     def clear_summary(self):
         if self.summary_count or self.summary_shown:
             self.summary_count = self.summary_shown = 0
-            self.withdraw_notification("new-messages")
+            self.take_back_notification("new-messages")
 
     def notify(self, message, count=1):
         chat_id = str(message.get("chat_id", ""))
@@ -3876,7 +3947,37 @@ class Application(Gtk.Application):
             body = f"{body[:170]}（共 {count} 則新訊息）"
         notification.set_body(body[:200])
         notification.set_default_action_and_target("app.open-chat", GLib.Variant.new_string(chat_id))
-        self.send_notification("chat-" + chat_id[:64], notification)
+        self.show_notification("chat-" + chat_id[:64], notification, chat_id)
+
+    def show_notification(self, key, notification, chat_id=""):
+        self.send_notification(key, notification)
+        self.notified[key] = chat_id
+
+    def take_back_notification(self, key):
+        if self.notified.pop(key, None) is not None:
+            self.withdraw_notification(key)
+
+    def take_back_all_notifications(self):
+        for key in list(self.notified):
+            self.take_back_notification(key)
+
+    def forget_saved_notifications(self):
+        """Earlier versions sent notifications through org.gtk.Notifications.
+        GNOME saves those and brings them back at every login, so the dock
+        showed a count before LINE was even opened. They now go through
+        org.freedesktop.Notifications (see __main__.py), which GNOME drops
+        when LINE exits; this takes back, once, what the old way left."""
+        if self.state.mode == "demo" or self.prefs.settings["old_notifications_cleared"]:
+            return
+        bus = self.get_dbus_connection()
+        if bus is None:
+            return
+        keys = ["new-messages"] + ["chat-" + chat_id[:64] for chat_id in self.state.chats if chat_id != KEEP_ID]
+        for key in keys:
+            bus.call("org.gtk.Notifications", "/org/gtk/Notifications", "org.gtk.Notifications", "RemoveNotification",
+                     GLib.Variant("(ss)", (self.get_application_id(), key)), None,
+                     Gio.DBusCallFlags.NO_AUTO_START, -1, None, None, None)
+        self.prefs.save_settings(old_notifications_cleared=True)
 
     def toast(self, text, error=False):
         if not text:
@@ -3901,6 +4002,7 @@ class Application(Gtk.Application):
         return response.get("error", {}).get("message", "操作失敗，請稍後再試。")
 
     def shutdown_core(self, *_):
+        self.take_back_all_notifications()
         self.pictures.closed = True
         self.photos.closed = True
         self.pending_images = []
@@ -3933,6 +4035,27 @@ class Application(Gtk.Application):
             found.extend(self.labels_in(child))
             child = child.get_next_sibling()
         return found
+
+    def find_all_css(self, widget, css):
+        found = []
+        child = widget.get_first_child()
+        while child:
+            if child.has_css_class(css):
+                found.append(child)
+            found.extend(self.find_all_css(child, css))
+            child = child.get_next_sibling()
+        return found
+
+    def find_css(self, widget, css):
+        child = widget.get_first_child()
+        while child:
+            if child.has_css_class(css):
+                return child
+            found = self.find_css(child, css)
+            if found is not None:
+                return found
+            child = child.get_next_sibling()
+        return None
 
     def smoke_step(self):
         step = getattr(self, "smoke_phase", 0)
@@ -4004,6 +4127,43 @@ class Application(Gtk.Application):
                 self.toggle_pref("muted")
                 self.check("mute toggles locally", self.prefs.has("muted", self.smoke_chat) and self.muted_tag.get_visible())
                 self.toggle_pref("muted")
+                family = self.state.chats["demo-family"]
+                self.notify({"chat_id": "demo-family", "kind": "text", "text": "smoke", "sender_name": "嘉嘉"})
+                shown = "chat-demo-family" in self.notified and family.get("unread")
+                self.read_chat(family)
+                self.check("a chat's notification is taken back once it is read", shown and "chat-demo-family" not in self.notified)
+                bubble = self.find_css(self.history, "bubble")
+                texts = [item for item in self.state.messages.get(self.smoke_chat, []) if item.get("kind") == "text"]
+                menu = self.open_context_menu(bubble, 4, 4, self.message_menu(texts[-1], self.current_chat())) if bubble and texts else None
+                self.check("right-click menu opens from the pointer, outside the message row",
+                           menu is not None and menu.get_visible() and menu.get_parent() is self.overlay and menu.get_halign() == START)
+                if menu is not None:
+                    menu.popdown()
+                history = self.state.messages.setdefault(self.smoke_chat, [])
+                history.append({"id": "smoke-link", "chat_id": self.smoke_chat, "sender_id": "demo-hao", "sender_name": "林子豪",
+                                "text": "路線 https://line.me/zh-hant/ 參考", "kind": "text", "time": int(time.time() * 1000), "status": "received"})
+                self.after_message(self.smoke_chat)
+                linked = [widget for widget in self.find_all_css(self.history, "bubble-text") if widget.get_use_markup()]
+                self.check("web addresses in messages are links",
+                           len(linked) == 1 and '<a href="https://line.me/zh-hant/">https://line.me/zh-hant/</a>' in linked[0].get_label())
+                text = linked[0] if linked else None
+                if text is not None:
+                    text.grab_focus()
+                    text.select_region(0, 2)
+                    selected = text.get_selection_bounds()[0]
+                    class Press:
+                        @staticmethod
+                        def get_current_button():
+                            return 1
+                    self.window_pressed(Press, 1, 2, 2)
+                    self.check("a click elsewhere drops the selection and its focus",
+                               selected and not text.get_selection_bounds()[0] and self.window.get_focus() is not text)
+                self.state.messages[self.smoke_chat] = [m for m in history if m["id"] != "smoke-link"]
+                self.after_message(self.smoke_chat)
+                card = self.find_css(self.history, "file-bubble")
+                self.check("file card shows the type, the name and the size",
+                           card is not None and self.find_css(card, "kind-pdf") is not None
+                           and {"散步路線提案.pdf", "檔案大小：2.4 KB"} <= set(self.labels_in(card)))
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
                 self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
@@ -4164,6 +4324,22 @@ class Application(Gtk.Application):
     def run(self, argv):
         status = super().run(argv)
         return self.exit_status or status
+
+
+def selected_text(widget):
+    """The text selected in a selectable label inside widget, if any."""
+    pending = [widget]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Gtk.Label) and current.get_selectable():
+            found, start, end = current.get_selection_bounds()
+            if found and end > start:
+                return current.get_text()[start:end].replace("\ufffc", "")
+        child = current.get_first_child()
+        while child is not None:
+            pending.append(child)
+            child = child.get_next_sibling()
+    return ""
 
 
 def padded_label(text):

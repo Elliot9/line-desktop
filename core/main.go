@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -109,7 +110,15 @@ func main() {
 	demo := flag.Bool("demo", false, "Use deterministic offline demo data")
 	showVersion := flag.Bool("version", false, "Print version")
 	diag := flag.Bool("diagnose", false, "Print anonymised contact/chat field statistics for the saved login")
+	diagRead := flag.Bool("diagnose-read", false, "Print anonymised read-receipt statistics for the saved login")
 	flag.Parse()
+	if *diagRead {
+		if err := diagnoseReadRange(context.Background(), newKeyringStore()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *diag {
 		if err := diagnose(context.Background(), newKeyringStore()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -535,7 +544,18 @@ func (b *backend) handle(req request) (any, error, bool) {
 		if b.demo {
 			list = b.messages[p.ChatID]
 		} else {
+			// Who has read how far, asked alongside the messages; a slow or
+			// failed answer only means fewer 已讀 labels.
+			ranges := make(chan map[string]map[string]int64, 1)
+			ctx, token, chatID := b.ctx, b.session.AccessToken, p.ChatID
+			go func() {
+				found, _ := fetchReadRanges(ctx, token, []string{chatID})
+				ranges <- found
+			}()
 			list, err = b.listMessages(p.ChatID, p.Limit)
+			if err == nil {
+				b.mergeReadBy(p.ChatID, (<-ranges)[p.ChatID])
+			}
 		}
 		if list == nil {
 			list = []message{}
@@ -544,7 +564,7 @@ func (b *backend) handle(req request) (any, error, bool) {
 			list = list[len(list)-p.Limit:]
 		}
 		b.handleAuthError(err)
-		return map[string]any{"messages": list}, err, false
+		return map[string]any{"messages": list, "read_by": maps.Clone(b.mergeReadBy(p.ChatID, nil))}, err, false
 	case "messages.send":
 		var p struct {
 			ChatID  string                 `json:"chat_id"`

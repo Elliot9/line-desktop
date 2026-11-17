@@ -1,4 +1,7 @@
 """Small GTK builders that mirror the element types used in index.html."""
+import re
+import unicodedata
+
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk, Pango
@@ -165,13 +168,91 @@ def person_avatar(person_id, own_id="", size=43, radius=16):
     return Avatar([person_source(person_id, own_id)], size)
 
 
+# File type → colour of its icon, like LINE's file messages.
+FILE_KINDS = {
+    "pdf": ("pdf",),
+    "word": ("doc", "docx", "odt", "rtf", "pages"),
+    "sheet": ("xls", "xlsx", "xlsm", "csv", "ods", "numbers"),
+    "slides": ("ppt", "pptx", "odp", "key"),
+    "archive": ("zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz"),
+    "image": ("jpg", "jpeg", "png", "gif", "webp", "heic", "bmp", "svg", "tif", "tiff"),
+    "video": ("mp4", "mov", "m4v", "avi", "mkv", "webm"),
+    "audio": ("mp3", "m4a", "aac", "wav", "flac", "ogg"),
+}
+FILE_KIND = {extension: kind for kind, extensions in FILE_KINDS.items() for extension in extensions}
+
+
+def file_extension(name):
+    name = str(name or "")
+    stem, dot, extension = name.rpartition(".")
+    return extension.lower() if dot and stem and 0 < len(extension) <= 8 and extension.isalnum() else ""
+
+
 def file_badge(name, small=False):
-    extension = (str(name or "FILE").rsplit(".", 1)[-1] if "." in str(name or "") else "FILE")[:4].upper()
-    badge = box(css="file-icon" + (" small" if small else ""), valign=Gtk.Align.CENTER)
-    text = label(extension, xalign=0.5)
+    extension = file_extension(name)
+    kind = FILE_KIND.get(extension, "other")
+    badge = box(css=f"file-icon kind-{kind}" + (" small" if small else ""), valign=Gtk.Align.CENTER)
+    text = label((extension or "file")[:4].upper(), xalign=0.5)
     text.set_vexpand(True)
     badge.append(text)
     return badge
+
+
+def columns(text):
+    """Display width: CJK and other wide characters take two columns."""
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+
+
+def short_file_name(name, limit):
+    """name shortened in the middle to at most limit columns, keeping its
+    end and extension (2026年度旅遊行程…最終版本v3.xlsx)."""
+    if columns(name) <= limit:
+        return name
+    tail = name[-(len(file_extension(name)) + 7):]
+    while columns(tail) > limit // 2:
+        tail = tail[1:]
+    head = ""
+    for char in name:
+        if columns(head + char) + 1 + columns(tail) > limit:
+            break
+        head += char
+    return head.rstrip() + "…" + tail
+
+
+def file_title(name, css="file-name", max_chars=22):
+    """A file name over about two lines, like LINE's file messages. A long
+    one loses its middle rather than its extension. (An ellipsizing label
+    would ask for the whole name's width and stretch the card.)"""
+    return label(short_file_name(str(name), max_chars * 2), css, wrap=True, max_chars=max_chars)
+
+
+# Web addresses in messages: http(s) and www. only. Full-width punctuation
+# ends an address; trailing ASCII punctuation is left out of it.
+URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"'\u3000-\u303f\uff01-\uff0f\uff1a-\uff20]+", re.IGNORECASE)
+URL_TRAILING = ".,;:!?'\"]}>"
+
+
+def linkify(widget, text):
+    """Shows the web addresses in a label's text as links; returns whether
+    there were any. GtkLabel opens a link in the browser when clicked."""
+    text = str(text or "")
+    pieces, last = [], 0
+    for match in URL_PATTERN.finditer(text):
+        url = match.group(0).rstrip(URL_TRAILING)
+        while url.endswith(")") and url.count(")") > url.count("("):
+            url = url[:-1].rstrip(URL_TRAILING)
+        if len(url) <= len("https://") or url.lower() in ("www.",):
+            continue
+        start, end = match.start(), match.start() + len(url)
+        href = url if "://" in url else "https://" + url
+        pieces.append(GLib.markup_escape_text(text[last:start], -1))
+        pieces.append(f'<a href="{GLib.markup_escape_text(href, -1)}">{GLib.markup_escape_text(url, -1)}</a>')
+        last = end
+    if not pieces:
+        return False
+    pieces.append(GLib.markup_escape_text(text[last:], -1))
+    widget.set_markup("".join(pieces))
+    return True
 
 
 def file_size(size):

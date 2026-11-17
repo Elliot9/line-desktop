@@ -108,6 +108,9 @@
 .message-sender { font-size: 11px; color: #777; margin: 0 0 3px 2px; }
 .bubble { font-size: 14px; border-radius: 17px; background: #efefef; padding: 8px 12px; color: #111; min-width: 20px; }
 .bubble-text { line-height: 1.25; }
+/* Message text can be selected, but clicking it shows no text cursor */
+.line-window label { caret-color: transparent; }
+.bubble link, .emoji-text link { color: #1d64c8; text-decoration-line: underline; }
 .message.own .bubble { background: #c3f69d; }
 .bubble.tail { border-top-left-radius: 5px; }
 .message.own .bubble.tail { border-top-left-radius: 17px; border-top-right-radius: 5px; }
@@ -123,10 +126,19 @@
 .message-meta { font-size: 10px; color: #a3a3a3; padding-bottom: 1px; }
 .message-meta .read { color: #a3a3a3; }
 .message-meta .failed { color: #d9534f; }
-.file-icon { min-width: 31px; min-height: 38px; background: #fdf1ed; border: 1px solid #f3d9d1; border-radius: 5px; color: #c77961; font-size: 9px; font-weight: 700; }
-.file-icon.small { min-width: 25px; min-height: 32px; font-size: 8px; }
-.file-name { font-size: 13px; font-weight: 600; }
-.file-size { font-size: 11px; color: #999; margin-top: 3px; }
+/* File type icon: a coloured page with the extension, as in LINE */
+.file-icon { min-width: 36px; min-height: 44px; border-radius: 6px; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.5px; background: #8a97a0; }
+.file-icon.small { min-width: 26px; min-height: 32px; border-radius: 5px; font-size: 7px; }
+.file-icon.kind-pdf { background: #e5484d; }
+.file-icon.kind-word { background: #2b6fd6; }
+.file-icon.kind-sheet { background: #1e9e5a; }
+.file-icon.kind-slides { background: #e8743b; }
+.file-icon.kind-archive { background: #9a7b55; }
+.file-icon.kind-image { background: #8e5bd6; }
+.file-icon.kind-video { background: #d6457a; }
+.file-icon.kind-audio { background: #d99a12; }
+.file-name { font-size: 13px; font-weight: 600; line-height: 1.2; }
+.file-size { font-size: 11px; color: #999; margin-top: 1px; }
 .attachment button.icon-btn { color: #777; }
 .drag-overlay { margin: 10px; border: 2px dashed #06c755; border-radius: 12px; background: rgba(240, 255, 245, 0.93); color: #06a046; font-size: 17px; }
 .photo-viewer { background: #111; }
@@ -271,12 +283,30 @@
 .forward .sidebar-search { margin-bottom: 8px; }
 .forward-chosen { font-size: 12px; color: #06b35d; padding: 0 4px 6px; }
 
-/* Popover menu · .popover */
+/* Popover menu · .popover. The popover node itself stays transparent: GTK
+   sizes the menu's surface to fit the shadow, and anything painted there is
+   a frame around the menu. The shadow is tighter than index.html's
+   (0 8px 35px) so that margin stays small; text is a step larger to read
+   like LINE PC's menus. */
 popover.line-popover { background: none; box-shadow: none; padding: 0; }
-popover.line-popover > contents { background: #fff; border: 1px solid #e0e9e1; border-radius: 10px; box-shadow: 0 8px 35px rgba(33, 76, 49, 0.15); min-width: 150px; padding: 6px; }
+popover.line-popover > contents { background: #fff; border: 1px solid #e0e9e1; border-radius: 10px; box-shadow: 0 6px 20px rgba(33, 76, 49, 0.16); min-width: 150px; padding: 6px; }
 popover.line-popover.flat > contents { box-shadow: none; }
-.line-popover button { font-size: 11px; padding: 10px 12px; border-radius: 5px; color: #748879; }
+.line-popover button { font-size: 12px; padding: 9px 12px; border-radius: 6px; color: #5f7366; }
 .line-popover button:hover { background: #edf6ee; }
+/* List menus (right click, ⋯, ☰): one look for every item. Keyboard focus
+   is a highlighted row, as in native menus. */
+.line-popover.menu-list button, .line-popover.menu-list button.text-button { font-size: 12px; padding: 9px 12px; color: #5f7366; }
+.line-popover.menu-list button.danger { color: #d96b63; }
+.line-popover.menu-list button:focus-visible { outline: none; background: #edf6ee; }
+.line-popover button.danger { color: #d96b63; }
+/* GTK's own menus (剪下／複製／貼上 in the composer and search boxes) */
+.line-window popover.menu { background: none; box-shadow: none; padding: 0; }
+.line-window popover.menu > contents { background: #fff; border: 1px solid #e0e9e1; border-radius: 10px; box-shadow: 0 6px 20px rgba(33, 76, 49, 0.16); min-width: 150px; padding: 6px; }
+.line-window popover.menu modelbutton { font-size: 12px; min-height: 0; padding: 8px 12px; border-radius: 6px; color: #5f7366; }
+.line-window popover.menu modelbutton:hover { background: #edf6ee; }
+.line-window popover.menu modelbutton:disabled { color: #b9c4bc; }
+.line-window popover.menu modelbutton accelerator { color: #a5b2a9; margin-left: 24px; }
+.line-window popover.menu separator { margin: 4px 6px; }
 
 /* Toast */
 .toast { background: #2b4939; color: #fff; border-radius: 9px; padding: 12px 19px; font-size: 12px; box-shadow: 0 8px 30px rgba(40, 68, 52, 0.13); margin-bottom: 37px; }

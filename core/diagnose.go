@@ -451,3 +451,73 @@ func diagnoseEncryption(ctx context.Context, saved *savedSession) {
 		fmt.Printf("  %3d  %s\n", results[k], k)
 	}
 }
+
+// diagnoseReadRange (`line-core --diagnose-read`) checks LINE's read ranges
+// (TalkService.getMessageReadRange) for recent chats: how many members have
+// a range and whether it covers the user's own last message. Prints counts
+// and field names only.
+func diagnoseReadRange(ctx context.Context, store sessionStore) error {
+	saved, err := store.Load(ctx)
+	if err != nil || saved == nil {
+		return fmt.Errorf("no saved login: %v", err)
+	}
+	token := saved.AccessToken
+	boxes, err := apiClient(ctx, token).GetMessageBoxes(line.MessageBoxesOptions{ActiveOnly: true, MessageBoxCountLimit: 20, LastMessagesPerMessageBoxCount: 1})
+	if err != nil {
+		return fmt.Errorf("getMessageBoxes: %w", err)
+	}
+	ids := []string{}
+	ownLast := map[string]int64{}
+	for _, box := range boxes.MessageBoxes {
+		ids = append(ids, box.ID)
+		for _, m := range box.LastMessages {
+			if m.From == saved.MID {
+				created, _ := m.CreatedTime.Int64()
+				ownLast[box.ID] = created
+			}
+		}
+	}
+	fmt.Printf("chats: %d (own last message in %d)\n", len(ids), len(ownLast))
+	for _, args := range [][]any{{ids, 2}, {ids}} {
+		r, err := rawCall(ctx, token, "getMessageReadRange", args...)
+		if err != nil {
+			fmt.Printf("getMessageReadRange with %d args: %v\n", len(args), midPattern.ReplaceAllString(err.Error(), "<mid>"))
+			continue
+		}
+		data, _ := r["data"].([]any)
+		fmt.Printf("getMessageReadRange with %d args: %d results (data is %T)\n", len(args), len(data), r["data"])
+		resultKeys, entryKeys := map[string]int{}, map[string]string{}
+		covered, readers := 0, 0
+		for _, item := range data {
+			result, _ := item.(map[string]any)
+			for key := range result {
+				resultKeys[key]++
+			}
+			chatID, _ := result["chatId"].(string)
+			ranges, _ := result["ranges"].(map[string]any)
+			best := int64(0)
+			for reader, list := range ranges {
+				if reader == saved.MID {
+					continue
+				}
+				readers++
+				entries, _ := list.([]any)
+				for _, e := range entries {
+					entry, _ := e.(map[string]any)
+					for key, value := range entry {
+						entryKeys[key] = fmt.Sprintf("%T", value)
+					}
+					end, _ := json.Number(fmt.Sprint(entry["endTime"])).Int64()
+					best = max(best, end)
+				}
+			}
+			if own, ok := ownLast[chatID]; ok && best >= own {
+				covered++
+			}
+		}
+		fmt.Printf("  result fields %v; entry fields %v; other members with a range: %d; chats whose own last message is covered: %d of %d\n",
+			resultKeys, entryKeys, readers, covered, len(ownLast))
+		break
+	}
+	return nil
+}
