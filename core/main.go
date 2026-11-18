@@ -112,7 +112,15 @@ func main() {
 	diag := flag.Bool("diagnose", false, "Print anonymised contact/chat field statistics for the saved login")
 	diagRead := flag.Bool("diagnose-read", false, "Print anonymised read-receipt statistics for the saved login")
 	diagHistory := flag.Bool("diagnose-history", false, "Page back through recent chats with the saved login and print how far LINE serves history")
+	diagVideo := flag.Bool("diagnose-video", false, "Download and decrypt the newest video of the recent chats in memory and print what it held")
 	flag.Parse()
+	if *diagVideo {
+		if err := diagnoseVideo(context.Background(), newKeyringStore()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *diagHistory {
 		if err := diagnoseHistory(context.Background(), newKeyringStore()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -747,7 +755,7 @@ func (b *backend) handle(req request) (any, error, bool) {
 		}
 		b.handleAuthError(firstErr)
 		return nil, firstErr, false
-	case "stickers.list", "messages.sticker", "files.send", "files.download", "images.send", "images.fetch":
+	case "stickers.list", "messages.sticker", "files.send", "files.download", "images.send", "images.fetch", "videos.fetch":
 		result, err := b.handleAttachment(req)
 		b.handleAuthError(err)
 		return result, err, false

@@ -115,6 +115,9 @@
 .bubble.tail { border-top-left-radius: 5px; }
 .message.own .bubble.tail { border-top-left-radius: 17px; border-top-right-radius: 5px; }
 .bubble.image-bubble, .message.own .bubble.image-bubble { padding: 0; background: #f0f0f0; border-radius: 12px; }
+.bubble.video-bubble, .message.own .bubble.video-bubble { background: #1f1f1f; }
+.video-bubble .video-play { padding: 12px 11px 12px 13px; border-radius: 999px; background: rgba(0, 0, 0, 0.55); color: #ffffff; }
+.video-bubble .video-length { margin: 6px 8px; padding: 1px 7px; border-radius: 8px; background: rgba(0, 0, 0, 0.55); color: #ffffff; font-size: 11px; }
 .bubble.sticker-bubble, .message.own .bubble.sticker-bubble { padding: 0; background: none; }
 .bubble.file-bubble, .message.own .bubble.file-bubble { background: #fff; border: 1px solid #e3e3e3; padding: 10px 12px; }
 .bubble.search-highlight { outline: 2px solid #f5c400; outline-offset: 2px; }

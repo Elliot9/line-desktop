@@ -142,16 +142,7 @@ func DownloadImage(ctx context.Context, client *line.Client, raw *line.Message, 
 		return nil, errors.New("不是照片訊息。")
 	}
 	meta := raw.ContentMetadata
-	keys := []string{}
-	var body struct {
-		KeyMaterial string `json:"keyMaterial"`
-	}
-	if len(payload) > 0 && json.Unmarshal(payload, &body) == nil && body.KeyMaterial != "" {
-		keys = append(keys, body.KeyMaterial)
-	}
-	if km := meta["ENC_KM"]; km != "" && (len(keys) == 0 || keys[0] != km) {
-		keys = append(keys, km)
-	}
+	keys := mediaKeys(raw, payload)
 	encrypted := len(keys) > 0 || len(raw.Chunks) > 0
 	limitOBS(client)
 	var data []byte

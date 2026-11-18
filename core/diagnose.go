@@ -616,3 +616,117 @@ func diagnoseHistory(ctx context.Context, store sessionStore) error {
 	}
 	return nil
 }
+
+// diagnoseVideo (`line-core --diagnose-video`) finds the newest video in the
+// recent chats, prints which metadata fields it carries (names only) and
+// downloads and decrypts its preview and the video in memory the way
+// videos.fetch does, printing sizes and file signatures. Read only: nothing
+// is written, sent or marked read.
+func diagnoseVideo(ctx context.Context, store sessionStore) error {
+	saved, err := store.Load(ctx)
+	if err != nil || saved == nil {
+		return fmt.Errorf("no saved login: %v", err)
+	}
+	crypto, err := e2ee.NewManager()
+	if err == nil {
+		err = crypto.LoadMyKeyFromExportedMap(saved.Keys)
+	}
+	if err != nil {
+		return fmt.Errorf("own keys unavailable: %v", err)
+	}
+	defer crypto.Close()
+	b := &backend{ctx: ctx, session: saved, crypto: crypto, messages: map[string][]message{}, seen: map[string]struct{}{}}
+	boxes, err := apiClient(ctx, saved.AccessToken).GetMessageBoxes(line.MessageBoxesOptions{ActiveOnly: true, MessageBoxCountLimit: 30, LastMessagesPerMessageBoxCount: 1})
+	if err != nil {
+		return fmt.Errorf("getMessageBoxes: %s", midPattern.ReplaceAllString(err.Error(), "<mid>"))
+	}
+	var found *line.Message
+	newest := int64(0)
+	consider := func(list []*line.Message) {
+		for _, m := range list {
+			if m == nil || m.ContentType != 2 {
+				continue
+			}
+			if created, _ := m.CreatedTime.Int64(); created > newest {
+				found, newest = m, created
+			}
+		}
+	}
+	searched := 0
+	for _, box := range boxes.MessageBoxes {
+		raw, err := b.api().GetRecentMessagesV2(box.ID, 100)
+		if err != nil {
+			continue
+		}
+		searched += len(raw)
+		consider(raw)
+		// Further back, a few pages, while nothing has turned up.
+		for page := 0; found == nil && len(raw) > 0 && page < 5; page++ {
+			var oldest *line.Message
+			created := int64(0)
+			for _, m := range raw {
+				if m == nil {
+					continue
+				}
+				if t, _ := m.CreatedTime.Int64(); t > 0 && (oldest == nil || t < created) {
+					oldest, created = m, t
+				}
+			}
+			if oldest == nil {
+				break
+			}
+			raw, err = previousMessages(ctx, saved.AccessToken, box.ID, oldest.ID, created, 200)
+			if err != nil {
+				break
+			}
+			searched += len(raw)
+			consider(raw)
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	fmt.Printf("messages searched: %d in %d chats\n", searched, len(boxes.MessageBoxes))
+	if found == nil {
+		fmt.Println("no video message found")
+		return nil
+	}
+	b.prefetchKeys([]*line.Message{found})
+	converted := b.convertMessage(found)
+	fields := []string{}
+	for key := range found.ContentMetadata {
+		fields = append(fields, key)
+	}
+	sort.Strings(fields)
+	payload := b.decryptedPayloads[found.ID]
+	payloadFields := []string{}
+	var parsed map[string]any
+	if json.Unmarshal(payload, &parsed) == nil {
+		for key := range parsed {
+			payloadFields = append(payloadFields, key)
+		}
+		sort.Strings(payloadFields)
+	}
+	fmt.Printf("video from %s: kind %s, duration %d ms, size %d, %dx%d, chunks %d, sid %q\n",
+		time.UnixMilli(newest).Format("2006-01-02"), converted.Kind, converted.Duration, converted.Size, converted.Width, converted.Height,
+		len(found.Chunks), found.ContentMetadata["SID"])
+	fmt.Printf("metadata fields: %v\npayload fields: %v\n", fields, payloadFields)
+	client := apiClient(ctx, saved.AccessToken)
+	client.OBSTokenCache = &line.OBSTokenCache{}
+	client.OBSClient = &http.Client{Timeout: 10 * time.Minute, Transport: contextTransport{ctx, http.DefaultTransport}}
+	for _, preview := range []bool{true, false} {
+		started := time.Now()
+		data, err := fetchMedia(ctx, client, found.ContentMetadata["DOWNLOAD_URL"] == "", func() ([]byte, error) {
+			return attachments.DownloadVideo(ctx, client, found, payload, preview)
+		})
+		what := map[bool]string{true: "preview", false: "video"}[preview]
+		if err != nil {
+			fmt.Printf("%s: %s\n", what, midPattern.ReplaceAllString(err.Error(), "<mid>"))
+			continue
+		}
+		signature := fmt.Sprintf("% x", data[:min(4, len(data))])
+		if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+			signature = "mp4 " + string(data[8:12])
+		}
+		fmt.Printf("%s: %d bytes in %s, starts %s\n", what, len(data), time.Since(started).Round(time.Millisecond), signature)
+	}
+	return nil
+}

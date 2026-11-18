@@ -148,7 +148,7 @@ def media_label(message):
     kind = message.get("kind")
     if kind == "file":
         return "[檔案] " + str(message.get("filename") or "檔案")
-    return {"sticker": "[貼圖]", "image": "[照片]", "system": "[系統訊息]"}.get(kind, "[訊息]")
+    return {"sticker": "[貼圖]", "image": "[照片]", "video": "[影片]", "system": "[系統訊息]"}.get(kind, "[訊息]")
 
 
 def preview(message, chat):

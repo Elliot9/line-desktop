@@ -178,6 +178,9 @@ class Application(Gtk.Application):
         # {"loading": a request is out, "done": LINE has nothing older}.
         self.older = {}
         self.history_top = None
+        # Decrypted videos by message id, and the viewers waiting for one.
+        self.video_paths = {}
+        self.video_waiting = {}
         self.notify_times = collections.deque()
         # Notifications on screen: notification id -> chat id ("" for the
         # summary). Taken back as soon as their chat has nothing unread.
@@ -1752,7 +1755,7 @@ class Application(Gtk.Application):
             else:
                 holder.append(self.sticker_picture(url, 130, 130))
             return holder
-        if kind == "image":
+        if kind in ("image", "video"):
             return self.image_bubble(message)
         if kind == "file":
             holder = box(V, 0, "bubble file-bubble")
@@ -1797,9 +1800,12 @@ class Application(Gtk.Application):
 
     def image_bubble(self, message):
         """Photo thumbnail sized from MEDIA_THUMB_INFO, loaded lazily through
-        images.fetch (the core downloads and decrypts)."""
+        images.fetch (the core downloads and decrypts). A video shows its
+        preview picture the same way, with a play button and its length."""
+        video = message.get("kind") == "video"
         width, height = int(message.get("width") or 0), int(message.get("height") or 0)
-        if width <= 0 or height <= 0:
+        sized = width > 0 and height > 0
+        if not sized:
             width, height = 240, 180
         scale = min(240 / width, 240 / height, 1.0)
         width, height = max(80, int(width * scale)), max(60, int(height * scale))
@@ -1822,8 +1828,31 @@ class Application(Gtk.Application):
                 picture.set_content_fit(Gtk.ContentFit.COVER)
             except AttributeError:
                 pass
-            holder.append(picture)
-            self.load_image(message, picture, preview=True)
+            if video:
+                holder.add_css_class("video-bubble")
+                frame = Gtk.Overlay()
+                frame.set_child(picture)
+                badge = box(V, 0, "video-play", halign=CENTER, valign=CENTER)
+                badge.append(icon("play", 22))
+                badge.set_can_target(False)
+                frame.add_overlay(badge)
+                length = video_length(message.get("duration"))
+                if length:
+                    stamp = label(length, "video-length")
+                    stamp.set_halign(END)
+                    stamp.set_valign(END)
+                    stamp.set_can_target(False)
+                    frame.add_overlay(stamp)
+                holder.append(frame)
+            else:
+                holder.append(picture)
+
+            def fit(texture):
+                # Without MEDIA_THUMB_INFO a video takes its preview's shape.
+                if not sized and texture.get_width() > 0 and texture.get_height() > 0:
+                    scale = min(240 / texture.get_width(), 240 / texture.get_height(), 1.0)
+                    picture.set_size_request(max(80, int(texture.get_width() * scale)), max(60, int(texture.get_height() * scale)))
+            self.load_image(message, picture, preview=True, done=fit if video else None)
         click = Gtk.GestureClick(button=1)
         click.connect("released", lambda *_: self.open_viewer(message))
         holder.add_controller(click)
@@ -1895,11 +1924,11 @@ class Application(Gtk.Application):
     # LINE PC shows a photo over the darkened window, with 上一張 and 下一張
     # at its sides to go through every photo of the conversation.
     def photo_slides(self, chat_id):
-        """The chat's photos, oldest first; the demo collage counts as its
-        three pictures."""
+        """The chat's photos and videos, oldest first; the demo collage
+        counts as its three pictures."""
         slides = []
         for message in self.history_for(chat_id):
-            if message.get("kind") != "image" or message.get("unsent"):
+            if message.get("kind") not in ("image", "video") or message.get("unsent"):
                 continue
             if str(message.get("url") or "") == "demo:collage":
                 slides += [{"message": message, "scene": name} for name in DEMO_SCENES]
@@ -1940,8 +1969,11 @@ class Application(Gtk.Application):
         status.set_can_target(False)
         stage.add_overlay(status)
         actions = box(H, 6, "lightbox-bar", halign=CENTER)
-        for name, text, action in (("download", "儲存", "save"), ("copy", "複製", "copy"), ("forward", "分享", "share")):
-            actions.append(button(icon_text(name, text, 15), lambda action=action: self.lightbox_action(action), "lightbox-action"))
+        buttons = {}
+        for name, text, action in (("download", "儲存", "save"), ("copy", "複製", "copy"), ("forward", "分享", "share"),
+                                   ("external", "用其他程式開啟", "open")):
+            buttons[action] = button(icon_text(name, text, 15), lambda action=action: self.lightbox_action(action), "lightbox-action")
+            actions.append(buttons[action])
         column.append(top)
         column.append(stage)
         column.append(actions)
@@ -1961,8 +1993,9 @@ class Application(Gtk.Application):
         self.modal_kind = "lightbox"
         # The state lives here rather than in the handlers above, so that no
         # handler holds the widgets (and their full-size photos) once closed.
-        self.lightbox = {"slides": slides, "index": -1, "stage": stage, "picture": None, "status": status,
-                         "caption": caption, "counter": counter, "previous": previous, "next": following, "actions": actions}
+        self.lightbox = {"slides": slides, "index": -1, "stage": stage, "picture": None, "status": status, "video": None,
+                         "caption": caption, "counter": counter, "previous": previous, "next": following, "actions": actions,
+                         "buttons": buttons}
         self.show_slide(index)
         GLib.idle_add(lambda: self.modal is layer and layer.child_focus(Gtk.DirectionType.TAB_FORWARD) and False)
 
@@ -1970,9 +2003,11 @@ class Application(Gtk.Application):
         viewer = self.lightbox
         if viewer is None or not 0 <= index < len(viewer["slides"]) or index == viewer["index"]:
             return
+        self.stop_video(viewer)
         viewer["index"] = index
         slide = viewer["slides"][index]
         message = slide["message"]
+        video = message.get("kind") == "video"
         total = len(viewer["slides"])
         viewer["counter"].set_text(f"{index + 1} / {total}")
         viewer["counter"].set_visible(total > 1)
@@ -1980,6 +2015,9 @@ class Application(Gtk.Application):
         viewer["next"].set_visible(index < total - 1)
         viewer["caption"].set_text(self.photo_caption(message))
         viewer["actions"].set_visible("scene" not in slide)
+        # A video is saved or opened elsewhere; LINE cannot forward it here.
+        for action, shown in (("copy", not video), ("share", not video), ("open", video)):
+            viewer["buttons"][action].set_visible(shown)
         # A new picture for every photo: a photo still loading for the one
         # shown before then lands in a picture that is no longer shown.
         picture = Gtk.Picture(can_shrink=True)
@@ -2001,8 +2039,15 @@ class Application(Gtk.Application):
         small = self.photos.texture(message.get("id"), True)
         if small is not None:
             picture.set_paintable(small)
-        status.set_text("正在載入照片…")
+        status.set_text("正在載入影片…" if video else "正在載入照片…")
         status.set_visible(True)
+        if video:
+            def unavailable(text):
+                if self.lightbox is viewer and viewer["picture"] is picture:
+                    status.set_text(text)
+                    status.set_visible(True)
+            self.load_video(message, lambda path: self.play_slide(viewer, picture, path), unavailable)
+            return
 
         def done(_texture):
             if self.lightbox is viewer and viewer["picture"] is picture:
@@ -2016,12 +2061,131 @@ class Application(Gtk.Application):
         self.load_image(message, picture, preview=False, done=done, failed=failed)
 
     def prefetch_slides(self, viewer):
-        """Fetches the photos on either side, so stepping to them is instant."""
+        """Fetches the photos on either side, so stepping to them is instant
+        (videos are fetched only when shown)."""
         for near in (viewer["index"] + 1, viewer["index"] - 1):
             if 0 <= near < len(viewer["slides"]) and "scene" not in viewer["slides"][near]:
                 message = viewer["slides"][near]["message"]
+                if message.get("kind") != "image":
+                    continue
                 if self.photos.texture(message.get("id"), False) is None:
                     self.load_image(message, Gtk.Picture(), preview=False)
+
+    def play_slide(self, viewer, picture, path):
+        """Plays the decrypted video in place of its preview picture."""
+        if self.lightbox is not viewer or viewer["picture"] is not picture:
+            return
+        player = Gtk.Video(hexpand=True, vexpand=True)
+        player.set_autoplay(True)
+        player.set_margin_start(88)
+        player.set_margin_end(88)
+        player.set_filename(path)
+        stream = player.get_media_stream()
+        if stream is not None:
+            stream.connect("notify::error", lambda media, _spec: self.video_failed(viewer, player, media))
+        viewer["video"] = player
+        viewer["picture"] = player
+        viewer["stage"].set_child(player)
+        viewer["status"].set_visible(False)
+
+    def video_failed(self, viewer, player, media):
+        if self.lightbox is viewer and viewer["video"] is player and media.get_error() is not None:
+            viewer["status"].set_text("無法在這裡播放這段影片，可能缺少影片解碼器（執行 ./line-app --setup 可以安裝）。也可以按「用其他程式開啟」或「儲存」。")
+            viewer["status"].set_visible(True)
+
+    @staticmethod
+    def stop_video(viewer):
+        """Stops the video on screen before it is replaced or the viewer closes."""
+        player = viewer.get("video") if viewer else None
+        if player is None:
+            return
+        stream = player.get_media_stream()
+        if stream is not None:
+            stream.pause()
+        player.set_media_stream(None)
+        viewer["video"] = None
+
+    def load_video(self, message, ready, failed):
+        """Calls ready(path) with the decrypted video, which the core
+        downloads into a private file, or failed(text)."""
+        message_id = message.get("id")
+        url = str(message.get("url") or "")
+        if url.startswith("file://"):
+            ready(url[7:])
+            return
+        known = self.video_paths.get(message_id)
+        if known and os.path.exists(known):
+            ready(known)
+            return
+        if not self.core or str(message_id or "").startswith("pending-"):
+            failed("無法載入影片。")
+            return
+        waiting = self.video_waiting.get(message_id)
+        if waiting is not None:
+            waiting.append((ready, failed))
+            return
+        self.video_waiting[message_id] = [(ready, failed)]
+        generation = self.generation
+
+        def fetched(response):
+            if generation != self.generation:
+                return
+            waiters = self.video_waiting.pop(message_id, [])
+            path = (response.get("result") or {}).get("path") if response.get("ok") else None
+            if isinstance(path, str) and path.startswith("/"):
+                self.video_paths[message_id] = path
+                for on_ready, _failed in waiters:
+                    on_ready(path)
+            else:
+                text = self.error(response) if not response.get("ok") else "無法載入影片。"
+                for _ready, on_failed in waiters:
+                    on_failed(text)
+        self.core.request("videos.fetch", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message_id}, fetched)
+
+    def save_video(self, message):
+        def chosen_path(path):
+            dialog = Gtk.FileChooserNative.new("儲存影片", self.window, Gtk.FileChooserAction.SAVE, "儲存", "取消")
+            stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(int(message.get("time", 0)) / 1000))
+            dialog.set_current_name(f"LINE_{stamp}.mp4")
+            self.track_dialog(dialog)
+
+            def chosen(chooser, response):
+                target = chooser.get_file().get_path() if response == Gtk.ResponseType.ACCEPT and chooser.get_file() else None
+                chooser.destroy()
+                if not target:
+                    return
+
+                def copy():
+                    try:
+                        shutil.copyfile(path, target)
+                        self.dispatch(self.toast, "影片已儲存")
+                    except OSError as error:
+                        self.dispatch(self.toast, f"無法儲存：{error.strerror}", True)
+                threading.Thread(target=copy, daemon=True, name="line-save-video").start()
+            dialog.connect("response", chosen)
+            dialog.show()
+        self.load_video(message, chosen_path, lambda text: self.toast(text, True))
+
+    def open_video_elsewhere(self, message):
+        """Hands the decrypted video to the desktop's video player."""
+        def launch(path):
+            gfile = Gio.File.new_for_path(path)
+            launcher = getattr(Gtk, "FileLauncher", None)
+            if launcher is None:
+                try:
+                    Gio.AppInfo.launch_default_for_uri(gfile.get_uri(), None)
+                except GLib.Error:
+                    self.toast("找不到可以播放影片的程式。", True)
+                return
+
+            def done(source, result):
+                try:
+                    source.launch_finish(result)
+                except GLib.Error as error:
+                    if "dismiss" not in str(error.message).lower():
+                        self.toast("找不到可以播放影片的程式。", True)
+            launcher.new(gfile).launch(self.window, None, done)
+        self.load_video(message, launch, lambda text: self.toast(text, True))
 
     def lightbox_step(self, delta):
         if self.lightbox is not None:
@@ -2032,9 +2196,15 @@ class Application(Gtk.Application):
             return
         message = self.lightbox["slides"][self.lightbox["index"]]["message"]
         if action == "save":
-            self.save_image(message)
+            self.save_video(message) if message.get("kind") == "video" else self.save_image(message)
         elif action == "copy":
             self.copy_image(message)
+        elif action == "open":
+            player = self.lightbox.get("video")
+            stream = player.get_media_stream() if player is not None else None
+            if stream is not None:
+                stream.pause()  # it plays in the other program now
+            self.open_video_elsewhere(message)
         else:
             self.close_modal()
             self.open_forward(message)
@@ -2045,9 +2215,10 @@ class Application(Gtk.Application):
         layer = gesture.get_widget()
         picked = layer.pick(x, y, Gtk.PickFlags.DEFAULT)
         widget = picked
+        player = self.lightbox.get("video") if self.lightbox else None
         while widget is not None and widget is not layer:
-            if isinstance(widget, (Gtk.Button, Gtk.Label)):
-                return
+            if isinstance(widget, (Gtk.Button, Gtk.Label)) or (player is not None and widget is player):
+                return  # a button, the caption, or the video and its controls
             widget = widget.get_parent()
         picture = self.lightbox["picture"] if self.lightbox else None
         if picture is not None and picked is picture:
@@ -2139,6 +2310,8 @@ class Application(Gtk.Application):
         if kind == "image":
             options.append(("copy", "複製", lambda: self.copy_image(message)))
             options.append(("download", "另存新檔", lambda: self.save_image(message)))
+        if kind == "video":
+            options.append(("download", "另存新檔", lambda: self.save_video(message)))
         if kind == "file":
             options.append(("download", "另存新檔", lambda: self.download_file(message)))
         if chat and chat["id"] != KEEP_ID and not pending and self.state.capabilities.get("reply", True):
@@ -2680,6 +2853,7 @@ class Application(Gtk.Application):
         self.overlay.remove_overlay(self.modal)
         self.modal = None
         self.modal_kind = ""
+        self.stop_video(self.lightbox)
         self.lightbox = None
         self.update = None
         self.pages.set_can_focus(True)
@@ -2752,6 +2926,11 @@ class Application(Gtk.Application):
         if self.modal_kind == "lightbox" and keyval in (Gdk.KEY_Left, Gdk.KEY_Right):
             self.lightbox_step(1 if keyval == Gdk.KEY_Right else -1)
             return True
+        if self.modal_kind == "lightbox" and keyval == Gdk.KEY_space and self.lightbox and self.lightbox.get("video"):
+            stream = self.lightbox["video"].get_media_stream()
+            if stream is not None:
+                stream.set_playing(not stream.get_playing())
+                return True
         return False
 
     # ----------------------------------------------------------------- theme
@@ -4157,6 +4336,8 @@ class Application(Gtk.Application):
         self.sticker_popover.popdown()
         self.state.clear()
         self.older = {}
+        self.video_paths = {}
+        self.video_waiting = {}
         self.photos.clear()
         self.read_marks.clear()
         self.sticker_waiting.clear()
@@ -4677,6 +4858,7 @@ class Application(Gtk.Application):
                 self.check_dock_count()
                 self.check_update_prompt()
                 self.check_older_messages()
+                self.check_video_message()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
                 self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
@@ -4824,6 +5006,49 @@ class Application(Gtk.Application):
                    and sent[-1][1] == {"count": unread, "count-visible": True})
         self.state.chats["demo-family"]["unread"] -= 1
         self.render_rail()
+
+    def check_video_message(self):
+        import subprocess
+        output = Path(self.options.smoke_test)
+        clip, broken = output / "clip.mp4", output / "broken.mp4"
+        broken.write_bytes(b"\0" * 4096)
+        try:
+            playable = subprocess.run(["gst-launch-1.0", "-q", "videotestsrc", "num-buffers=30", "!", "video/x-raw,width=320,height=180,framerate=15/1",
+                                       "!", "videoconvert", "!", "avenc_mpeg4", "!", "mp4mux", "!", "filesink", f"location={clip}"],
+                                      timeout=30, capture_output=True).returncode == 0 and clip.stat().st_size > 0
+        except (OSError, subprocess.SubprocessError):
+            playable = False
+        chat_id = self.state.selected
+        history = self.history_for(chat_id)
+        now = int(time.time() * 1000)
+        added = [{"id": f"smoke-video-{n}", "chat_id": chat_id, "sender_id": "demo-hao", "sender_name": "林子豪", "kind": "video",
+                  "url": "file://" + str(path), "duration": 46332, "time": now + n, "status": "received"} for n, path in ((1, clip), (2, broken))]
+        history += added
+        self.after_message(chat_id)
+        self.check("a video shows its picture with a play button and its length",
+                   bool(self.find_all_css(self.history, "video-bubble")) and "0:46" in self.labels_in(self.history)
+                   and any(option[1] == "另存新檔" for option in self.message_menu(added[0], self.current_chat())))
+        self.open_viewer(added[0])
+        viewer = self.lightbox
+        buttons = viewer["buttons"] if viewer else {}
+        self.check("a video opens in the viewer with 儲存 and 用其他程式開啟",
+                   viewer is not None and viewer["slides"][viewer["index"]]["message"] is added[0]
+                   and buttons["open"].get_visible() and buttons["save"].get_visible()
+                   and not buttons["copy"].get_visible() and not buttons["share"].get_visible())
+        if playable:
+            started = self.wait_for(lambda: viewer["video"] is not None and viewer["video"].get_media_stream() is not None
+                                    and viewer["video"].get_media_stream().is_prepared(), 10)
+            stream = viewer["video"].get_media_stream() if viewer["video"] is not None else None
+            self.check("the video plays in the viewer", started and stream is not None and stream.get_error() is None and stream.get_playing())
+        player = viewer["video"]
+        self.lightbox_step(1)
+        self.check("stepping on stops the video", player is None or player.get_media_stream() is None)
+        failed = self.wait_for(lambda: viewer["status"].get_visible() and "無法在這裡播放" in viewer["status"].get_text(), 10)
+        self.check("a video that cannot be played says so", failed)
+        self.close_modal()
+        self.check("closing the viewer stops the video", self.lightbox is None and (viewer["video"] is None or viewer["video"].get_media_stream() is None))
+        self.state.messages[chat_id] = [m for m in history if m not in added]
+        self.after_message(chat_id)
 
     def check_older_messages(self):
         class Recorder:
@@ -4973,6 +5198,15 @@ class Application(Gtk.Application):
     def run(self, argv):
         status = super().run(argv)
         return self.exit_status or status
+
+
+def video_length(milliseconds):
+    """A video's length as LINE shows it: 0:46, 12:05, 1:02:03."""
+    if not milliseconds:
+        return ""
+    minutes, seconds = divmod(max(0, round(int(milliseconds) / 1000)), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
 def on_photo(picture, x, y):

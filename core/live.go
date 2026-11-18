@@ -548,8 +548,19 @@ func (b *backend) convertMessage(raw *line.Message) message {
 		m.Expires = int64Value(raw.ContentMetadata["FILE_EXPIRE_TIMESTAMP"])
 		m.Text = "[檔案] " + m.Filename
 	case 2:
-		m.Kind = "system"
-		m.Text = "[影片] 此版本尚未支援播放。"
+		m.Kind = "video"
+		m.Text = "[影片]"
+		var thumb struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		}
+		if json.Unmarshal([]byte(raw.ContentMetadata["MEDIA_THUMB_INFO"]), &thumb) == nil {
+			m.Width, m.Height = thumb.Width, thumb.Height
+		}
+		m.Duration = int64Value(raw.ContentMetadata["DURATION"])
+		if size := int64Value(raw.ContentMetadata["FILE_SIZE"]); size > 0 {
+			m.Size = size
+		}
 	case 3:
 		m.Kind = "system"
 		m.Text = "[語音訊息] 此版本尚未支援播放。"

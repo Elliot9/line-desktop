@@ -108,3 +108,16 @@ func TestMessagesBeforeRequest(t *testing.T) {
 		t.Fatal("shutdown timed out")
 	}
 }
+
+// A video message: its length, size and shape come from the metadata LINE
+// sends (DURATION and FILE_SIZE, as seen on a real account).
+func TestVideoMessage(t *testing.T) {
+	me, peer := peerMID(9), peerMID(1)
+	b := &backend{session: &savedSession{MID: me}}
+	raw := &line.Message{ID: "v1", From: peer, To: me, ContentType: 2, CreatedTime: "1000",
+		ContentMetadata: map[string]string{"DURATION": "46332", "FILE_SIZE": "12188262", "OID": "x", "SID": "emv", "MEDIA_THUMB_INFO": `{"width":720,"height":1280}`}}
+	m := b.convertMessage(raw)
+	if m.Kind != "video" || m.Text != "[影片]" || m.Duration != 46332 || m.Size != 12188262 || m.Width != 720 || m.Height != 1280 {
+		t.Fatalf("unexpected video message: %+v", m)
+	}
+}

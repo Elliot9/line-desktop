@@ -36,7 +36,7 @@ LINE 官方只有 Windows 與 macOS 版。在 Linux 上，大家只能用 Wine �
 | **聊天** | 私訊與群組、未讀數、置頂、靜音、搜尋聊天與訊息、草稿保存 |
 | **訊息** | 文字、回覆、收回、已讀狀態、複製、轉傳、對話內搜尋 |
 | **貼圖與表情貼** | 你在手機上擁有的所有貼圖與 **LINE 表情貼**、最近使用、搜尋貼圖包；表情貼可以和文字混在同一則訊息 |
-| **照片與檔案** | 收發照片與檔案、拖放、直接貼上剪貼簿圖片、螢幕截圖後傳送、照片檢視器（在聊天的照片間上一張／下一張） |
+| **照片、影片與檔案** | 收發照片與檔案、播放收到的影片、拖放、直接貼上剪貼簿圖片、螢幕截圖後傳送、照片檢視器（在聊天的照片與影片間上一張／下一張） |
 | **好友** | 我的最愛、群組、好友、官方帳號分區，與手機上的清單一致；個人檔案卡 |
 | **桌面整合** | 系統通知、深色模式（跟隨系統或手動切換）、應用程式選單與 dock 圖示（開著時顯示未讀數）、LINE PC 版快捷鍵、有新版本時一鍵更新 |
 | **本機小工具** | 聊天室記事、Keep 筆記（只存在這台電腦） |
@@ -98,7 +98,7 @@ cd line-desktop
 
 ### 其他發行版
 
-自動安裝只支援 apt。Fedora、Arch 等請先自行安裝對應套件再執行 `./line-app`：Python 3、PyGObject、GTK 4、librsvg、libsecret（`secret-tool`）、gnome-keyring、curl、Noto CJK 與 Noto Color Emoji 字型。完整清單見 [setup-debian.sh](scripts/setup-debian.sh)。
+自動安裝只支援 apt。Fedora、Arch 等請先自行安裝對應套件再執行 `./line-app`：Python 3、PyGObject、GTK 4、librsvg、libsecret（`secret-tool`）、gnome-keyring、curl、Noto CJK 與 Noto Color Emoji 字型；要在程式裡播放影片，另需 GTK 4 的 GStreamer 媒體後端，以及 GStreamer 的 good 與 libav 外掛（MP4、H.264、AAC）。完整清單見 [setup-debian.sh](scripts/setup-debian.sh)。
 
 ### 更新與移除
 
@@ -139,6 +139,7 @@ cd line-desktop
 | `Ctrl+R` | 重新整理 |
 | `Ctrl+Q` | 結束 LINE（關閉視窗只會隱藏） |
 | `←` `→` | 照片檢視器中切換上一張／下一張（`Esc` 關閉） |
+| `空白鍵` | 照片檢視器中暫停／繼續播放影片 |
 
 ## 目前的限制
 
@@ -146,7 +147,7 @@ cd line-desktop
 
 - 語音與視訊通話（調查記錄見 [待辦](docs/BACKLOG.md)）
 - 新增好友、建立群組、社群（OpenChat）
-- 編輯訊息
+- 編輯訊息、傳送影片、播放語音訊息
 - 只能看到最近 14 天內的聊天記錄：往上捲動可以載入更早的訊息，但 LINE 只提供電腦版最近 14 天的訊息，更早的只在手機上
 - 記事與 Keep 筆記只存在本機，不會同步到手機
 

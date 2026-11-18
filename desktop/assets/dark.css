@@ -125,3 +125,4 @@
 .line-window.dark .update-version.new { color: #2fd27a; }
 .line-window.dark progressbar.update-progress > trough { background: #3a3a3a; }
 .line-window.dark .messages .history-note { color: #b8b8b8; background: rgba(255, 255, 255, 0.08); }
+.line-window.dark .bubble.video-bubble, .line-window.dark .message.own .bubble.video-bubble { background: #111111; }

@@ -308,6 +308,12 @@ func (b *backend) handleAttachment(req request) (any, error) {
 		raw, payload, preview := b.rawMessages[p.MessageID], b.decryptedPayloads[p.MessageID], p.Preview
 		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
 			needsToken := raw != nil && raw.ContentMetadata["DOWNLOAD_URL"] == ""
+			if raw != nil && raw.ContentType == 2 {
+				// A video's picture in the chat: its preview, sealed like a photo.
+				return fetchMedia(ctx, client, raw.ContentMetadata["PREVIEW_URL"] == "", func() ([]byte, error) {
+					return attachments.DownloadVideo(ctx, client, raw, payload, true)
+				})
+			}
 			return fetchMedia(ctx, client, needsToken, func() ([]byte, error) {
 				data, err := attachments.DownloadImage(ctx, client, raw, payload, preview)
 				if err != nil && preview && ctx.Err() == nil && line.HTTPStatusCode(err) != 401 {
@@ -338,6 +344,78 @@ func (b *backend) handleAttachment(req request) (any, error) {
 			path, err := b.media.put(key, data)
 			if err != nil {
 				return nil, fail("image_unavailable", "無法暫存照片，請確認系統暫存空間後再試。")
+			}
+			return map[string]any{"path": path}, nil
+		}), nil
+	case "videos.fetch":
+		// Downloads and decrypts a video into the private media directory,
+		// like images.fetch, for the viewer to play.
+		var p struct {
+			ChatID    string `json:"chat_id"`
+			MessageID string `json:"message_id"`
+		}
+		if err := params(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if !b.hasMessage(p.ChatID, p.MessageID) {
+			return nil, fail("invalid_params", "影片不屬於此聊天。")
+		}
+		unsent := func() bool {
+			for _, m := range b.messages[p.ChatID] {
+				if m.ID == p.MessageID && m.Unsent {
+					return true
+				}
+			}
+			return false
+		}
+		if unsent() {
+			return nil, fail("video_unavailable", "這則訊息已收回。")
+		}
+		key := p.MessageID + "/video"
+		if path, ok := b.media.get(key); ok {
+			return map[string]any{"path": path}, nil
+		}
+		if b.demo {
+			return nil, fail("unsupported", "示範模式沒有 LINE 影片。")
+		}
+		if err := b.recallMessage(p.ChatID, p.MessageID); err != nil {
+			return nil, err
+		}
+		raw, payload := b.rawMessages[p.MessageID], b.decryptedPayloads[p.MessageID]
+		if raw == nil || raw.ContentType != 2 {
+			return nil, fail("invalid_params", "這則訊息不是影片。")
+		}
+		return b.background(req.ID, func(ctx context.Context, client *line.Client) (any, error) {
+			// A video can take minutes on a slow connection; the session's
+			// context still ends it at logout.
+			client.OBSClient = &http.Client{Timeout: 10 * time.Minute, Transport: contextTransport{ctx, http.DefaultTransport}}
+			return fetchMedia(ctx, client, raw.ContentMetadata["DOWNLOAD_URL"] == "", func() ([]byte, error) {
+				return attachments.DownloadVideo(ctx, client, raw, payload, false)
+			})
+		}, func(value any, err error) (any, error) {
+			if err != nil {
+				var media *mediaFailure
+				if errors.Is(err, attachments.ErrAuthentication) {
+					return nil, fail("file_authentication", "影片驗證失敗，已停止播放。")
+				}
+				if errors.Is(err, attachments.ErrFileSize) {
+					return nil, fail("video_unavailable", "影片太大，無法在這裡播放。")
+				}
+				if !errors.As(err, &media) && isAuthError(err) {
+					return nil, err
+				}
+				return nil, fail("video_unavailable", "無法下載影片，可能已過期。")
+			}
+			if unsent() {
+				return nil, fail("video_unavailable", "這則訊息已收回。")
+			}
+			data, _ := value.([]byte)
+			if len(data) == 0 || len(data) > attachments.MaxVideoSize {
+				return nil, fail("video_unavailable", "無法下載影片，可能已過期。")
+			}
+			path, err := b.media.put(key, data)
+			if err != nil {
+				return nil, fail("video_unavailable", "無法暫存影片，請確認系統暫存空間後再試。")
 			}
 			return map[string]any{"path": path}, nil
 		}), nil
