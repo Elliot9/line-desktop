@@ -154,14 +154,17 @@ func SaveFile(path string, data []byte) error {
 	return nil
 }
 
-type limitTransport struct{ base http.RoundTripper }
+type limitTransport struct {
+	base http.RoundTripper
+	most int64
+}
 
 func (t limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	response, err := t.base.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-	limit := int64(MaxFileSize + 32)
+	limit := t.most
 	if req.Method != "GET" || strings.HasSuffix(req.URL.Path, "object_info.obs") || response.StatusCode != 200 {
 		limit = 65536
 	}
@@ -198,6 +201,11 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 func limitOBS(client *line.Client) {
+	limitOBSTo(client, MaxFileSize+32)
+}
+
+// limitOBSTo makes the client's OBS downloads fail once they pass most bytes.
+func limitOBSTo(client *line.Client, most int64) {
 	base := client.OBSClient
 	if base == nil {
 		base = client.HTTPClient
@@ -210,6 +218,6 @@ func limitOBS(client *line.Client) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	copyClient.Transport = limitTransport{transport}
+	copyClient.Transport = limitTransport{transport, most}
 	client.OBSClient = &copyClient
 }

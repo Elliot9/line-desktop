@@ -74,9 +74,11 @@ type message struct {
 	URL       string `json:"url,omitempty"`
 	StickerID string `json:"sticker_id,omitempty"`
 	PackageID string `json:"package_id,omitempty"`
-	// Image messages: Width/Height come from MEDIA_THUMB_INFO when present.
+	// Image and video messages: Width/Height come from MEDIA_THUMB_INFO when present.
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`
+	// Duration is a video's length in milliseconds, if LINE says.
+	Duration int64 `json:"duration,omitempty"`
 	// ReplyTo is the quoted message ID (messageRelationType 3).
 	ReplyTo string `json:"reply_to,omitempty"`
 	Unsent  bool   `json:"unsent,omitempty"`

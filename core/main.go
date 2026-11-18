@@ -111,7 +111,23 @@ func main() {
 	showVersion := flag.Bool("version", false, "Print version")
 	diag := flag.Bool("diagnose", false, "Print anonymised contact/chat field statistics for the saved login")
 	diagRead := flag.Bool("diagnose-read", false, "Print anonymised read-receipt statistics for the saved login")
+	diagHistory := flag.Bool("diagnose-history", false, "Page back through recent chats with the saved login and print how far LINE serves history")
+	diagVideo := flag.Bool("diagnose-video", false, "Download and decrypt the newest video of the recent chats in memory and print what it held")
 	flag.Parse()
+	if *diagVideo {
+		if err := diagnoseVideo(context.Background(), newKeyringStore()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *diagHistory {
+		if err := diagnoseHistory(context.Background(), newKeyringStore()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *diagRead {
 		if err := diagnoseReadRange(context.Background(), newKeyringStore()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -565,6 +581,37 @@ func (b *backend) handle(req request) (any, error, bool) {
 		}
 		b.handleAuthError(err)
 		return map[string]any{"messages": list, "read_by": maps.Clone(b.mergeReadBy(p.ChatID, nil))}, err, false
+	case "messages.before":
+		// Older messages, a page at a time, when the person scrolls up.
+		var p struct {
+			ChatID     string `json:"chat_id"`
+			BeforeID   string `json:"before_id"`
+			BeforeTime int64  `json:"before_time"`
+			Limit      int    `json:"limit"`
+		}
+		if err := params(req.Params, &p); err != nil {
+			return nil, err, false
+		}
+		if !b.validChat(p.ChatID) || p.BeforeID == "" || len(p.BeforeID) > 64 || p.BeforeTime <= 0 || p.Limit < 0 || p.Limit > 200 {
+			return nil, fail("invalid_params", "聊天或訊息無效。"), false
+		}
+		if p.Limit == 0 {
+			p.Limit = 100
+		}
+		list := []message{}
+		var err error
+		// Demo chats come whole; LINE's message IDs are numbers.
+		if !b.demo {
+			if !numericID(p.BeforeID) || b.session == nil {
+				return nil, fail("invalid_params", "訊息無效。"), false
+			}
+			list, err = b.olderMessages(p.ChatID, p.BeforeID, p.BeforeTime, p.Limit)
+			if list == nil {
+				list = []message{}
+			}
+		}
+		b.handleAuthError(err)
+		return map[string]any{"messages": list, "more": len(list) > 0, "read_by": maps.Clone(b.mergeReadBy(p.ChatID, nil))}, err, false
 	case "messages.send":
 		var p struct {
 			ChatID  string                 `json:"chat_id"`
@@ -708,7 +755,7 @@ func (b *backend) handle(req request) (any, error, bool) {
 		}
 		b.handleAuthError(firstErr)
 		return nil, firstErr, false
-	case "stickers.list", "messages.sticker", "files.send", "files.download", "images.send", "images.fetch":
+	case "stickers.list", "messages.sticker", "files.send", "files.download", "images.send", "images.fetch", "videos.fetch":
 		result, err := b.handleAttachment(req)
 		b.handleAuthError(err)
 		return result, err, false

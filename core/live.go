@@ -413,17 +413,29 @@ func (b *backend) rememberMessage(m message) {
 		}
 	}
 	list := append(b.messages[m.ChatID], m)
-	if len(list) > 500 {
-		list = list[len(list)-500:]
+	if len(list) > historyLimit {
+		list = list[len(list)-historyLimit:]
 	}
 	b.messages[m.ChatID] = list
-	b.seen[m.ID] = struct{}{}
-	b.seenOrder = append(b.seenOrder, m.ID)
+	b.markSeen(m.ID)
+}
+
+// markSeen records a message the core holds; the oldest of 10000 is
+// forgotten together with its raw and decrypted forms.
+func (b *backend) markSeen(id string) {
+	if b.seen == nil {
+		b.seen = map[string]struct{}{}
+	}
+	if _, ok := b.seen[id]; ok {
+		return
+	}
+	b.seen[id] = struct{}{}
+	b.seenOrder = append(b.seenOrder, id)
 	if len(b.seenOrder) > 10000 {
-		id := b.seenOrder[0]
-		delete(b.seen, id)
-		delete(b.rawMessages, id)
-		delete(b.decryptedPayloads, id)
+		old := b.seenOrder[0]
+		delete(b.seen, old)
+		delete(b.rawMessages, old)
+		delete(b.decryptedPayloads, old)
 		b.seenOrder = b.seenOrder[1:]
 	}
 }
@@ -536,8 +548,19 @@ func (b *backend) convertMessage(raw *line.Message) message {
 		m.Expires = int64Value(raw.ContentMetadata["FILE_EXPIRE_TIMESTAMP"])
 		m.Text = "[檔案] " + m.Filename
 	case 2:
-		m.Kind = "system"
-		m.Text = "[影片] 此版本尚未支援播放。"
+		m.Kind = "video"
+		m.Text = "[影片]"
+		var thumb struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		}
+		if json.Unmarshal([]byte(raw.ContentMetadata["MEDIA_THUMB_INFO"]), &thumb) == nil {
+			m.Width, m.Height = thumb.Width, thumb.Height
+		}
+		m.Duration = int64Value(raw.ContentMetadata["DURATION"])
+		if size := int64Value(raw.ContentMetadata["FILE_SIZE"]); size > 0 {
+			m.Size = size
+		}
 	case 3:
 		m.Kind = "system"
 		m.Text = "[語音訊息] 此版本尚未支援播放。"

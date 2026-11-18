@@ -27,7 +27,14 @@ if [[ $EUID != 0 ]]; then
     fi
     apt_command=(sudo apt-get)
 fi
-echo '安裝 GTK 4、Python、系統鑰匙圈與字型；首次安裝可能需要 sudo 密碼。' >&2
+# Videos in the viewer: the MP4 demuxer and the H.264/AAC decoders LINE uses,
+# and GTK's GStreamer backend, a package of its own on older releases (newer
+# GTK has it built in).
+packages+=(gstreamer1.0-plugins-good gstreamer1.0-libav)
+echo '安裝 GTK 4、Python、系統鑰匙圈、字型與影片播放元件；首次安裝可能需要 sudo 密碼。' >&2
 "${apt_command[@]}" update
+if apt-cache show libgtk-4-media-gstreamer >/dev/null 2>&1; then
+    packages+=(libgtk-4-media-gstreamer)
+fi
 "${apt_command[@]}" install -y --no-install-recommends "${packages[@]}"
 
