@@ -174,6 +174,11 @@ class Application(Gtk.Application):
         self.list_extending = False
         self.history_limit = HISTORY_PAGE
         self.rendered = None
+        # The bubble of each message drawn in the open conversation, and the
+        # message a click on a reply's quote went to while it flashes.
+        self.bubbles = {}
+        self.flash_id = None
+        self.flash_timer = 0
         # Per chat, loading messages from before its history:
         # {"loading": a request is out, "done": LINE has nothing older}.
         self.older = {}
@@ -1358,23 +1363,26 @@ class Application(Gtk.Application):
                 readers[reader] = max(int(readers.get(reader, 0) or 0), int(at or 0))
             chat["read_by"] = readers
 
-    def load_older(self):
+    def load_older(self, after=None):
         """Asks LINE for the messages before the oldest one held for the open
         chat, a page at a time; scrolling to the top does this too. LINE
-        serves about the last 14 days, so it ends there."""
+        serves about the last 14 days, so it ends there.
+
+        after() is called once a page came in and the chat is still open.
+        Returns whether a page was asked for."""
         chat = self.current_chat()
         if not chat or chat["id"] == KEEP_ID or not self.core or self.message_search:
-            return
+            return False
         chat_id = chat["id"]
         state = self.older.setdefault(chat_id, {"loading": False, "done": False})
         history = self.history_for(chat_id)
         oldest = next((m for m in history if not str(m.get("id", "")).startswith("pending-")), None)
         if state["loading"] or state["done"] or oldest is None:
-            return
+            return False
         if len(history) >= HISTORY_LIMIT or int(oldest.get("time") or 0) <= 0:
             state["done"] = True
             self.fill_history_top()
-            return
+            return False
         state["loading"] = True
         self.fill_history_top()
         generation = self.generation
@@ -1402,7 +1410,10 @@ class Application(Gtk.Application):
                 self.render_messages(anchor=anchor, top=True)
             else:
                 self.fill_history_top()
+            if after:
+                after()
         self.core.request("messages.before", {"chat_id": chat_id, "before_id": str(oldest["id"]), "before_time": int(oldest["time"]), "limit": 100}, loaded)
+        return True
 
     def history_edge(self, _scrolled, position):
         """Scrolling to the top of the conversation shows earlier messages:
@@ -1502,6 +1513,7 @@ class Application(Gtk.Application):
         top of the view (where it was, before earlier messages came in)."""
         clear(self.history)
         self.rendered = None
+        self.bubbles = {}
         chat = self.current_chat()
         history = self.history_for(self.state.selected) if chat else []
         query = self.message_search.casefold()
@@ -1551,6 +1563,9 @@ class Application(Gtk.Application):
                        and abs(int(message.get("time", 0)) - int(previous.get("time", 0))) < 5 * 60 * 1000)
         row, bubble = self.message_widget(message, chat, hit, grouped, by_id)
         self.history.append(row)
+        self.bubbles[message.get("id")] = bubble
+        if self.flash_id is not None and message.get("id") == self.flash_id:
+            bubble.add_css_class("jump-highlight")  # redrawn while it still flashes
         flow["previous"] = message
         return row, bubble, hit
 
@@ -1735,15 +1750,62 @@ class Application(Gtk.Application):
         return part
 
     def reply_quote(self, message, by_id):
-        target = by_id.get(message.get("reply_to"))
-        quote = box(V, 2, "reply-quote")
+        """The message a reply answers, as LINE shows it at the top of the
+        bubble: its sender's picture and name, its text (a thumbnail for a
+        photo or sticker), then a rule. Clicking it goes to that message."""
+        reply_to = message.get("reply_to")
+        target = by_id.get(reply_to)
+        quote = box(H, 8, "reply-quote")
         if target:
+            own_id = self.state.profile.get("id", "")
+            sender = own_id if target.get("mine") else target.get("sender_id")
+            face = person_avatar(sender, own_id, 20)
+            face.set_valign(START)
+            quote.append(face)
             name = "你" if target.get("mine") else (target.get("sender_name") or self.state.name_of(target.get("sender_id")))
-            quote.append(label(name, "reply-name", ellipsize=True))
-            quote.append(label(self.summary(target), "reply-body", ellipsize=True, max_chars=30))
+            words = box(V, 1, hexpand=True, valign=CENTER)
+            words.append(label(name, "reply-name", ellipsize=True))
+            words.append(label(self.summary(target), "reply-body", ellipsize=True, max_chars=30))
+            quote.append(words)
+            thumb = None if target.get("unsent") else self.reply_thumb(target)
+            if thumb is not None:
+                quote.append(thumb)
         else:
             quote.append(label("回覆的訊息", "reply-body"))
+        click = Gtk.GestureClick(button=1)
+        chat_id = message.get("chat_id") or self.state.selected
+        click.connect("released", lambda _gesture, presses, *_: presses == 1 and self.jump_to_message(chat_id, reply_to))
+        quote.add_controller(click)
+        quote.set_cursor_from_name("pointer")
         return quote
+
+    def reply_thumb(self, target):
+        """A small picture of a quoted photo, video or sticker."""
+        kind = target.get("kind")
+        url = str(target.get("url") or "")
+        if kind == "sticker":
+            if url.startswith("demo:bear-"):
+                thumb = Art("bear", url.rsplit("-", 1)[-1], 36, 32)
+            else:
+                thumb = self.sticker_picture(url, 36, 36)
+        elif kind in ("image", "video"):
+            if url == "demo:collage":
+                thumb = Art("scene", DEMO_SCENES[0], 36, 36)
+            else:
+                thumb = Gtk.Picture()
+                thumb.set_size_request(36, 36)
+                thumb.set_can_shrink(True)
+                try:
+                    thumb.set_content_fit(Gtk.ContentFit.COVER)
+                except AttributeError:
+                    pass
+                self.load_image(target, thumb, preview=True)
+            thumb.set_overflow(Gtk.Overflow.HIDDEN)
+            thumb.add_css_class("reply-thumb")
+        else:
+            return None
+        thumb.set_valign(CENTER)
+        return thumb
 
     def bubble(self, message, kind, by_id=None):
         own = bool(message.get("mine"))
@@ -1783,6 +1845,10 @@ class Application(Gtk.Application):
         holder = box(V, 4, "bubble")
         holder.set_halign(END if own else START)
         if message.get("reply_to"):
+            # The quote and its rule run edge to edge, the text sits below.
+            holder.set_spacing(0)
+            holder.add_css_class("has-reply")
+            holder.set_overflow(Gtk.Overflow.HIDDEN)
             holder.append(self.reply_quote(message, by_id or {}))
         built = self.emoji_text(message) if kind == "text" else None
         if built:
@@ -2398,6 +2464,56 @@ class Application(Gtk.Application):
             # Near the top, below the day it falls on; else in the middle.
             adjustment.set_value(max(0, bounds.get_y() - (64 if top else adjustment.get_page_size() / 2)))
         return GLib.SOURCE_REMOVE
+
+    def jump_to_message(self, chat_id, message_id, pages=20):
+        """Clicking the quote of a reply: shows the message it answers in the
+        middle of the conversation and flashes it, as in LINE. One older
+        than what is held is looked for a page at a time, as far back as
+        LINE serves."""
+        if not message_id or chat_id != self.state.selected or not self.current_chat():
+            return
+        history = self.history_for(chat_id)
+        index = next((i for i, m in enumerate(history) if m.get("id") == message_id), None)
+        if index is None:
+            if pages > 0 and self.load_older(after=lambda: self.jump_to_message(chat_id, message_id, pages - 1)):
+                return
+            self.toast("找不到原本的訊息。電腦上只能看到最近 14 天內的訊息。")
+            return
+        bubble = self.bubbles.get(message_id)
+        if bubble is None or bubble.get_root() is None:
+            # Draw the conversation from a little above it.
+            self.history_limit = max(self.history_limit, min(len(history), len(history) - index + 10))
+            self.render_messages(anchor=message_id)
+            bubble = self.bubbles.get(message_id)
+            if bubble is None:
+                return
+        else:
+            self.stick_bottom = False
+            GLib.idle_add(self.scroll_to, bubble)
+        self.flash(message_id)
+
+    def flash(self, message_id):
+        """Outlines a message for a moment."""
+        self.end_flash()
+        bubble = self.bubbles.get(message_id)
+        if bubble is not None:
+            bubble.add_css_class("jump-highlight")
+        self.flash_id = message_id
+        self.flash_timer = GLib.timeout_add(1600, self.flash_over)
+
+    def flash_over(self):
+        self.flash_timer = 0
+        self.end_flash()
+        return GLib.SOURCE_REMOVE
+
+    def end_flash(self):
+        if self.flash_timer:
+            GLib.source_remove(self.flash_timer)
+            self.flash_timer = 0
+        bubble = self.bubbles.get(self.flash_id) if self.flash_id is not None else None
+        if bubble is not None:
+            bubble.remove_css_class("jump-highlight")
+        self.flash_id = None
 
     # ------------------------------------------------------------ search bar
     def open_search(self):
@@ -4344,6 +4460,8 @@ class Application(Gtk.Application):
         self.reload_due = False
         self.discard_temp_images()
         self.rendered = None
+        self.bubbles = {}
+        self.end_flash()
         self.history_limit = HISTORY_PAGE
         self.list_key = None
         self.render_pending.clear()
@@ -4858,6 +4976,7 @@ class Application(Gtk.Application):
                 self.check_dock_count()
                 self.check_update_prompt()
                 self.check_older_messages()
+                self.check_reply_jump()
                 self.check_video_message()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
@@ -5090,6 +5209,37 @@ class Application(Gtk.Application):
             self.state.messages[chat_id] = held
             self.history_limit = HISTORY_PAGE
             self.render_messages()
+
+    def check_reply_jump(self):
+        chat_id = self.state.selected
+        history = self.history_for(chat_id)
+        reply = next((m for m in history if m.get("reply_to")), None)
+        if reply is None:
+            self.check("the demo has a reply", False)
+            return
+        target = reply["reply_to"]
+        self.render_messages()
+        quote = self.find_css(self.bubbles[reply["id"]], "reply-quote")
+        self.check("a reply shows who it answers and what, above a rule",
+                   quote is not None and self.bubbles[reply["id"]].has_css_class("has-reply")
+                   and {"陳怡庭", "[照片]"} <= set(self.labels_in(quote)))
+        controllers = quote.observe_controllers() if quote is not None else None
+        clicks = [controllers.get_item(i) for i in range(controllers.get_n_items())] if controllers else []
+        click = next((c for c in clicks if isinstance(c, Gtk.GestureClick) and c.get_button() == 1), None)
+        if click is not None:
+            click.emit("released", 1, 4.0, 4.0)
+        self.check("clicking the quote goes to the message it answers and flashes it",
+                   click is not None and self.bubbles[target].has_css_class("jump-highlight") and not self.stick_bottom)
+        # The original is not drawn yet: the conversation grows to show it.
+        self.history_limit = len(history) - history.index(reply)
+        self.render_messages()
+        drawn = target in self.bubbles
+        self.jump_to_message(chat_id, target)
+        self.check("a quoted message above what is drawn is drawn and shown",
+                   not drawn and target in self.bubbles and self.bubbles[target].has_css_class("jump-highlight"))
+        self.end_flash()
+        self.history_limit = HISTORY_PAGE
+        self.render_messages()
 
     def check_update_prompt(self):
         current = updater.current_version()
