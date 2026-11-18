@@ -113,6 +113,13 @@
 .line-window.dark .chat-preview { color: #999; }
 .line-window.dark .message-sender { color: #aaa; }
 .line-window.dark .message.own .bubble label { color: #111; }
+.line-window.dark .bubble.has-reply > .reply-quote { border-bottom-color: rgba(255, 255, 255, 0.12); }
+.line-window.dark .message.own .bubble.has-reply > .reply-quote { border-bottom-color: rgba(0, 0, 0, 0.15); }
+.line-window.dark .bubble.has-reply > .reply-quote:hover { background: rgba(255, 255, 255, 0.05); }
+.line-window.dark .message.own .bubble.has-reply > .reply-quote:hover { background: rgba(0, 0, 0, 0.05); }
+.line-window.dark .reply-name { color: #f2f2f2; }
+.line-window.dark .reply-body { color: #a8a8a8; }
+.line-window.dark .message.own .bubble label.reply-body { color: rgba(0, 0, 0, 0.6); }
 .line-window.dark .bubble link, .line-window.dark .emoji-text link { color: #7db4ff; }
 .line-window.dark .message.own .bubble link { color: #0b4fae; }
 .line-window.dark .field dropdown > button { background: #1f1f1f; border-color: #3a3a3a; color: #eee; }

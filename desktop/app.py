@@ -174,6 +174,11 @@ class Application(Gtk.Application):
         self.list_extending = False
         self.history_limit = HISTORY_PAGE
         self.rendered = None
+        # The bubble of each message drawn in the open conversation, and the
+        # message a click on a reply's quote went to while it flashes.
+        self.bubbles = {}
+        self.flash_id = None
+        self.flash_timer = 0
         # Per chat, loading messages from before its history:
         # {"loading": a request is out, "done": LINE has nothing older}.
         self.older = {}
@@ -203,6 +208,8 @@ class Application(Gtk.Application):
         self.demo_note_hidden = False
         self.dialogs = set()
         self.generation = 0
+        self.profile_timer = 0
+        self.profile_pending = None
         self.smoke = {"checks": [], "mode": self.state.mode}
         self.exit_status = 0
         self.connect("activate", self.activate)
@@ -1172,20 +1179,64 @@ class Application(Gtk.Application):
         contents.append(person_avatar(contact.get("id"), self.state.profile.get("id", ""), 52 if profile else 40))
         info = box(V, 3, valign=CENTER, hexpand=True)
         info.append(label(contact.get("name", "好友"), "chat-name" + (" profile" if profile else ""), ellipsize=True))
-        status = label(contact.get("status") or "", "chat-preview", ellipsize=True)
+        status = self.status_widget(contact, "chat-preview", 15)
         status.set_visible(bool(contact.get("status")))
         info.append(status)
         contents.append(info)
-        row = button(contents, None, "chat-row friend" + (" own-profile" if profile else ""), contact.get("name", "好友"))
-        row.set_tooltip_text(None)
         person_id = contact.get("id", "")
-        # LINE PC: one click shows the profile, a double click opens the chat.
-        click = Gtk.GestureClick(button=1)
-        click.connect("released", lambda gesture, n, x, y: self.open_direct(person_id) if n >= 2 and not profile else (self.open_profile(person_id) if n == 1 else None))
-        row.add_controller(click)
+        # The row's own "clicked": a left-click gesture added to a button
+        # never sees the release (the button claims the click), so neither
+        # the single nor the double click used to do anything.
+        row = button(contents, lambda: self.friend_clicked(person_id, profile), "chat-row friend" + (" own-profile" if profile else ""), contact.get("name", "好友"))
+        row.set_tooltip_text(None)
         if not profile:
             self.attach_context(row, lambda: self.friend_menu(contact))
         return row
+
+    def friend_clicked(self, person_id, own=False):
+        """Friends page, as in LINE PC: one click shows the profile card, a
+        double click opens the chat. Your own row only has the card."""
+        if own:
+            self.cancel_card()
+            self.open_profile(person_id)
+            return
+        self.card_click(person_id, lambda: self.open_profile(person_id), lambda: self.open_direct(person_id))
+
+    def group_clicked(self, chat_id):
+        """Friends page: one click shows the group's card, a double click opens its chat."""
+        self.card_click(chat_id, lambda: self.open_group_card(chat_id), lambda: self.open_group_chat(chat_id))
+
+    def card_click(self, key, single, double):
+        """Tells a single click on a friends-page row from a double click.
+
+        The card waits until a second click can no longer come: opened at
+        once, it would cover the list and take the second click."""
+        pending = self.profile_pending if self.profile_timer else None
+        self.cancel_card()
+        if pending == key:
+            double()  # second click on the same row within the double-click time
+            return
+        generation = self.generation
+
+        def show():
+            self.profile_timer = 0
+            if generation == self.generation and self.section == "friends":
+                single()
+            return GLib.SOURCE_REMOVE
+        settings = Gtk.Settings.get_default()
+        delay = settings.get_property("gtk-double-click-time") if settings else 400
+        self.profile_pending = key
+        self.profile_timer = GLib.timeout_add(max(150, int(delay)), show)
+
+    def cancel_card(self):
+        if self.profile_timer:
+            GLib.source_remove(self.profile_timer)
+            self.profile_timer = 0
+
+    def open_group_chat(self, chat_id):
+        if chat_id in self.state.chats:
+            self.close_modal()
+            self.select_chat(chat_id)
 
     def group_row(self, chat):
         contents = box(H, 12)
@@ -1194,11 +1245,10 @@ class Application(Gtk.Application):
         name.set_valign(CENTER)
         name.set_hexpand(True)
         contents.append(name)
-        row = button(contents, None, "chat-row friend", chat.get("name", "群組"))
+        # The row's own "clicked" (see friend_row): a gesture added to the
+        # button never fired, so groups in the friends list did nothing.
+        row = button(contents, lambda chat_id=chat["id"]: self.group_clicked(chat_id), "chat-row friend", chat.get("name", "群組"))
         row.set_tooltip_text(None)
-        click = Gtk.GestureClick(button=1)
-        click.connect("released", lambda gesture, n, x, y: self.select_chat(chat["id"]) if n >= 1 else None)
-        row.add_controller(click)
         return row
 
     def friend_menu(self, contact):
@@ -1358,23 +1408,26 @@ class Application(Gtk.Application):
                 readers[reader] = max(int(readers.get(reader, 0) or 0), int(at or 0))
             chat["read_by"] = readers
 
-    def load_older(self):
+    def load_older(self, after=None):
         """Asks LINE for the messages before the oldest one held for the open
         chat, a page at a time; scrolling to the top does this too. LINE
-        serves about the last 14 days, so it ends there."""
+        serves about the last 14 days, so it ends there.
+
+        after() is called once a page came in and the chat is still open.
+        Returns whether a page was asked for."""
         chat = self.current_chat()
         if not chat or chat["id"] == KEEP_ID or not self.core or self.message_search:
-            return
+            return False
         chat_id = chat["id"]
         state = self.older.setdefault(chat_id, {"loading": False, "done": False})
         history = self.history_for(chat_id)
         oldest = next((m for m in history if not str(m.get("id", "")).startswith("pending-")), None)
         if state["loading"] or state["done"] or oldest is None:
-            return
+            return False
         if len(history) >= HISTORY_LIMIT or int(oldest.get("time") or 0) <= 0:
             state["done"] = True
             self.fill_history_top()
-            return
+            return False
         state["loading"] = True
         self.fill_history_top()
         generation = self.generation
@@ -1402,7 +1455,10 @@ class Application(Gtk.Application):
                 self.render_messages(anchor=anchor, top=True)
             else:
                 self.fill_history_top()
+            if after:
+                after()
         self.core.request("messages.before", {"chat_id": chat_id, "before_id": str(oldest["id"]), "before_time": int(oldest["time"]), "limit": 100}, loaded)
+        return True
 
     def history_edge(self, _scrolled, position):
         """Scrolling to the top of the conversation shows earlier messages:
@@ -1502,6 +1558,7 @@ class Application(Gtk.Application):
         top of the view (where it was, before earlier messages came in)."""
         clear(self.history)
         self.rendered = None
+        self.bubbles = {}
         chat = self.current_chat()
         history = self.history_for(self.state.selected) if chat else []
         query = self.message_search.casefold()
@@ -1551,6 +1608,9 @@ class Application(Gtk.Application):
                        and abs(int(message.get("time", 0)) - int(previous.get("time", 0))) < 5 * 60 * 1000)
         row, bubble = self.message_widget(message, chat, hit, grouped, by_id)
         self.history.append(row)
+        self.bubbles[message.get("id")] = bubble
+        if self.flash_id is not None and message.get("id") == self.flash_id:
+            bubble.add_css_class("jump-highlight")  # redrawn while it still flashes
         flow["previous"] = message
         return row, bubble, hit
 
@@ -1728,6 +1788,49 @@ class Application(Gtk.Application):
                 flow.insert(self.emoji_text_part(rest), -1)
         return flow, only_emoji
 
+    def status_widget(self, person, css, size, wrap=False):
+        """A status message as the phone shows it: LINE emoji drawn as
+        pictures. LINE keeps only their alt text, such as "(hattifatteners)",
+        in the message itself; the core sends the pictures as status_emoji
+        runs over status_text. wrap=True centres it over several lines (cards),
+        otherwise it is one line cut off at the end (lists)."""
+        plain = str(person.get("status") or "")
+        text = str(person.get("status_text") or "")
+        runs = [run for run in person.get("status_emoji") or [] if isinstance(run, dict) and run.get("url")]
+        if not text or not runs:
+            return label(plain, css, wrap=wrap, xalign=0.5 if wrap else 0.0, ellipsize=not wrap)
+        if wrap:
+            holder = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=False, column_spacing=0,
+                                 row_spacing=0, max_children_per_line=60)
+            holder.set_halign(CENTER)
+            holder.set_can_target(False)  # a card's clicks belong to the card
+            add = lambda widget: holder.insert(widget, -1)
+        else:
+            holder = box(H, 0)
+            holder.set_overflow(Gtk.Overflow.HIDDEN)
+            add = holder.append
+        for name in (css + " rich-status").split():
+            holder.add_css_class(name)
+        holder.set_tooltip_text(plain or None)
+        chars, cursor = list(text), 0
+
+        def words(part):
+            # Children take the class's font and colour from the holder.
+            for line in part.split("\n"):
+                if line:
+                    add(label(line, wrap=wrap, ellipsize=not wrap))
+        for run in sorted(runs, key=lambda r: int(r.get("start", 0) or 0)):
+            start, end = int(run.get("start", 0) or 0), int(run.get("end", 0) or 0)
+            if start < cursor or end <= start or end > len(chars):
+                continue
+            words("".join(chars[cursor:start]))
+            picture = self.sticker_picture(run["url"], size, size)
+            picture.set_valign(CENTER)
+            add(picture)
+            cursor = end
+        words("".join(chars[cursor:]))
+        return holder
+
     @staticmethod
     def emoji_text_part(text):
         part = label(text, "emoji-text")
@@ -1735,15 +1838,62 @@ class Application(Gtk.Application):
         return part
 
     def reply_quote(self, message, by_id):
-        target = by_id.get(message.get("reply_to"))
-        quote = box(V, 2, "reply-quote")
+        """The message a reply answers, as LINE shows it at the top of the
+        bubble: its sender's picture and name, its text (a thumbnail for a
+        photo or sticker), then a rule. Clicking it goes to that message."""
+        reply_to = message.get("reply_to")
+        target = by_id.get(reply_to)
+        quote = box(H, 8, "reply-quote")
         if target:
+            own_id = self.state.profile.get("id", "")
+            sender = own_id if target.get("mine") else target.get("sender_id")
+            face = person_avatar(sender, own_id, 20)
+            face.set_valign(START)
+            quote.append(face)
             name = "你" if target.get("mine") else (target.get("sender_name") or self.state.name_of(target.get("sender_id")))
-            quote.append(label(name, "reply-name", ellipsize=True))
-            quote.append(label(self.summary(target), "reply-body", ellipsize=True, max_chars=30))
+            words = box(V, 1, hexpand=True, valign=CENTER)
+            words.append(label(name, "reply-name", ellipsize=True))
+            words.append(label(self.summary(target), "reply-body", ellipsize=True, max_chars=30))
+            quote.append(words)
+            thumb = None if target.get("unsent") else self.reply_thumb(target)
+            if thumb is not None:
+                quote.append(thumb)
         else:
             quote.append(label("回覆的訊息", "reply-body"))
+        click = Gtk.GestureClick(button=1)
+        chat_id = message.get("chat_id") or self.state.selected
+        click.connect("released", lambda _gesture, presses, *_: presses == 1 and self.jump_to_message(chat_id, reply_to))
+        quote.add_controller(click)
+        quote.set_cursor_from_name("pointer")
         return quote
+
+    def reply_thumb(self, target):
+        """A small picture of a quoted photo, video or sticker."""
+        kind = target.get("kind")
+        url = str(target.get("url") or "")
+        if kind == "sticker":
+            if url.startswith("demo:bear-"):
+                thumb = Art("bear", url.rsplit("-", 1)[-1], 36, 32)
+            else:
+                thumb = self.sticker_picture(url, 36, 36)
+        elif kind in ("image", "video"):
+            if url == "demo:collage":
+                thumb = Art("scene", DEMO_SCENES[0], 36, 36)
+            else:
+                thumb = Gtk.Picture()
+                thumb.set_size_request(36, 36)
+                thumb.set_can_shrink(True)
+                try:
+                    thumb.set_content_fit(Gtk.ContentFit.COVER)
+                except AttributeError:
+                    pass
+                self.load_image(target, thumb, preview=True)
+            thumb.set_overflow(Gtk.Overflow.HIDDEN)
+            thumb.add_css_class("reply-thumb")
+        else:
+            return None
+        thumb.set_valign(CENTER)
+        return thumb
 
     def bubble(self, message, kind, by_id=None):
         own = bool(message.get("mine"))
@@ -1783,6 +1933,10 @@ class Application(Gtk.Application):
         holder = box(V, 4, "bubble")
         holder.set_halign(END if own else START)
         if message.get("reply_to"):
+            # The quote and its rule run edge to edge, the text sits below.
+            holder.set_spacing(0)
+            holder.add_css_class("has-reply")
+            holder.set_overflow(Gtk.Overflow.HIDDEN)
             holder.append(self.reply_quote(message, by_id or {}))
         built = self.emoji_text(message) if kind == "text" else None
         if built:
@@ -2399,6 +2553,56 @@ class Application(Gtk.Application):
             adjustment.set_value(max(0, bounds.get_y() - (64 if top else adjustment.get_page_size() / 2)))
         return GLib.SOURCE_REMOVE
 
+    def jump_to_message(self, chat_id, message_id, pages=20):
+        """Clicking the quote of a reply: shows the message it answers in the
+        middle of the conversation and flashes it, as in LINE. One older
+        than what is held is looked for a page at a time, as far back as
+        LINE serves."""
+        if not message_id or chat_id != self.state.selected or not self.current_chat():
+            return
+        history = self.history_for(chat_id)
+        index = next((i for i, m in enumerate(history) if m.get("id") == message_id), None)
+        if index is None:
+            if pages > 0 and self.load_older(after=lambda: self.jump_to_message(chat_id, message_id, pages - 1)):
+                return
+            self.toast("找不到原本的訊息。電腦上只能看到最近 14 天內的訊息。")
+            return
+        bubble = self.bubbles.get(message_id)
+        if bubble is None or bubble.get_root() is None:
+            # Draw the conversation from a little above it.
+            self.history_limit = max(self.history_limit, min(len(history), len(history) - index + 10))
+            self.render_messages(anchor=message_id)
+            bubble = self.bubbles.get(message_id)
+            if bubble is None:
+                return
+        else:
+            self.stick_bottom = False
+            GLib.idle_add(self.scroll_to, bubble)
+        self.flash(message_id)
+
+    def flash(self, message_id):
+        """Outlines a message for a moment."""
+        self.end_flash()
+        bubble = self.bubbles.get(message_id)
+        if bubble is not None:
+            bubble.add_css_class("jump-highlight")
+        self.flash_id = message_id
+        self.flash_timer = GLib.timeout_add(1600, self.flash_over)
+
+    def flash_over(self):
+        self.flash_timer = 0
+        self.end_flash()
+        return GLib.SOURCE_REMOVE
+
+    def end_flash(self):
+        if self.flash_timer:
+            GLib.source_remove(self.flash_timer)
+            self.flash_timer = 0
+        bubble = self.bubbles.get(self.flash_id) if self.flash_id is not None else None
+        if bubble is not None:
+            bubble.remove_css_class("jump-highlight")
+        self.flash_id = None
+
     # ------------------------------------------------------------ search bar
     def open_search(self):
         if not self.current_chat():
@@ -2615,13 +2819,14 @@ class Application(Gtk.Application):
         profile.append(portrait)
         profile.append(label(chat.get("name", "你的對話空間") if chat else "你的對話空間", "detail-name", wrap=True, xalign=0.5))
         if not chat or chat["id"] == KEEP_ID:
-            caption = ""
+            caption = None
         elif chat.get("kind") in ("group", "room"):
-            caption = f"成員 {self.member_count(chat)}"
+            caption = label(f"成員 {self.member_count(chat)}", "detail-caption", wrap=True, xalign=0.5)
         else:
-            caption = (self.state.contacts.get(chat["id"]) or {}).get("status") or ""
-        if caption:
-            profile.append(label(caption, "detail-caption", wrap=True, xalign=0.5))
+            contact = self.state.contacts.get(chat["id"]) or {}
+            caption = self.status_widget(contact, "detail-caption", 14, wrap=True) if contact.get("status") else None
+        if caption is not None:
+            profile.append(caption)
         self.detail_contents.append(profile)
         quick = box(H, 26, "quick-actions", halign=CENTER)
         muted = bool(chat and self.prefs.has("muted", chat["id"]))
@@ -3349,9 +3554,10 @@ class Application(Gtk.Application):
         top.add_overlay(portrait)
         card.append(top)
         card.append(label(contact.get("name", "LINE"), "profile-name", xalign=0.5, wrap=True))
-        status = contact.get("status") or ("" if not me else "把日子過成喜歡的樣子。")
-        if status:
-            card.append(label(status, "profile-status", xalign=0.5, wrap=True))
+        if contact.get("status"):
+            card.append(self.status_widget(contact, "profile-status", 18, wrap=True))
+        elif me:
+            card.append(label("把日子過成喜歡的樣子。", "profile-status", xalign=0.5, wrap=True))
         actions = box(H, 28, "profile-actions", halign=CENTER)
 
         def action(name, text, callback):
@@ -3376,6 +3582,48 @@ class Application(Gtk.Application):
             action("rail-add", "加入好友", lambda: self.unsupported("此版本無法加入好友，請在手機 LINE 操作。"))
         card.append(actions)
         self.open_modal("profile", "", card, css="profile-modal")
+
+    def open_group_card(self, chat_id):
+        """Group card in the style of the profile card: picture, name, member
+        count, a few members, and actions to open the chat or the member list."""
+        chat = self.state.chats.get(chat_id)
+        if not chat:
+            return
+        own = self.state.profile.get("id", "")
+        card = box(V, 0, "profile-card")
+        top = Gtk.Overlay()
+        base = box(V, 0)
+        base.append(box(V, 0, "profile-cover"))
+        base.append(box(V, 0, "profile-cover-gap"))
+        top.set_child(base)
+        portrait = chat_avatar(chat, own, 104)
+        portrait.set_halign(CENTER)
+        portrait.set_valign(Gtk.Align.END)
+        portrait.add_css_class("profile-photo")
+        top.add_overlay(portrait)
+        card.append(top)
+        card.append(label(chat.get("name", "群組"), "profile-name", xalign=0.5, wrap=True))
+        count = self.member_count(chat)
+        card.append(label(f"成員 {count}" if count else "群組", "profile-status", xalign=0.5))
+        members = [m for m in self.members_of(chat) if m and m != own][:6]
+        if members:
+            faces = box(H, 6, "group-card-members", halign=CENTER)
+            for member in members:
+                faces.append(person_avatar(member, own, 32))
+            card.append(faces)
+        actions = box(H, 28, "profile-actions", halign=CENTER)
+
+        def action(name, text, callback):
+            item = box(V, 6)
+            circle = box(V, 0, "profile-action-icon", halign=CENTER)
+            circle.append(icon(name, 22))
+            item.append(circle)
+            item.append(label(text, "profile-action-label", xalign=0.5))
+            actions.append(button(item, callback, "profile-action", text))
+        action("chat", "聊天", lambda: self.open_group_chat(chat_id))
+        action("rail-friends", "成員", lambda: self.open_members(chat))
+        card.append(actions)
+        self.open_modal("group-card", "", card, css="profile-modal")
 
     def toggle_favorite(self, person_id, reopen=True):
         try:
@@ -4321,6 +4569,7 @@ class Application(Gtk.Application):
 
     def clear_session(self):
         self.generation += 1
+        self.cancel_card()
         for dialog in list(self.dialogs):
             if isinstance(dialog, Gtk.NativeDialog):
                 dialog.destroy()
@@ -4344,6 +4593,8 @@ class Application(Gtk.Application):
         self.reload_due = False
         self.discard_temp_images()
         self.rendered = None
+        self.bubbles = {}
+        self.end_flash()
         self.history_limit = HISTORY_PAGE
         self.list_key = None
         self.render_pending.clear()
@@ -4858,6 +5109,7 @@ class Application(Gtk.Application):
                 self.check_dock_count()
                 self.check_update_prompt()
                 self.check_older_messages()
+                self.check_reply_jump()
                 self.check_video_message()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
@@ -5090,6 +5342,37 @@ class Application(Gtk.Application):
             self.state.messages[chat_id] = held
             self.history_limit = HISTORY_PAGE
             self.render_messages()
+
+    def check_reply_jump(self):
+        chat_id = self.state.selected
+        history = self.history_for(chat_id)
+        reply = next((m for m in history if m.get("reply_to")), None)
+        if reply is None:
+            self.check("the demo has a reply", False)
+            return
+        target = reply["reply_to"]
+        self.render_messages()
+        quote = self.find_css(self.bubbles[reply["id"]], "reply-quote")
+        self.check("a reply shows who it answers and what, above a rule",
+                   quote is not None and self.bubbles[reply["id"]].has_css_class("has-reply")
+                   and {"陳怡庭", "[照片]"} <= set(self.labels_in(quote)))
+        controllers = quote.observe_controllers() if quote is not None else None
+        clicks = [controllers.get_item(i) for i in range(controllers.get_n_items())] if controllers else []
+        click = next((c for c in clicks if isinstance(c, Gtk.GestureClick) and c.get_button() == 1), None)
+        if click is not None:
+            click.emit("released", 1, 4.0, 4.0)
+        self.check("clicking the quote goes to the message it answers and flashes it",
+                   click is not None and self.bubbles[target].has_css_class("jump-highlight") and not self.stick_bottom)
+        # The original is not drawn yet: the conversation grows to show it.
+        self.history_limit = len(history) - history.index(reply)
+        self.render_messages()
+        drawn = target in self.bubbles
+        self.jump_to_message(chat_id, target)
+        self.check("a quoted message above what is drawn is drawn and shown",
+                   not drawn and target in self.bubbles and self.bubbles[target].has_css_class("jump-highlight"))
+        self.end_flash()
+        self.history_limit = HISTORY_PAGE
+        self.render_messages()
 
     def check_update_prompt(self):
         current = updater.current_version()

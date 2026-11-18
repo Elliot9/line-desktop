@@ -30,3 +30,31 @@ func TestParseContactFilters(t *testing.T) {
 		t.Errorf("overridden name not used: %q", got.Name)
 	}
 }
+
+// A status message with LINE emoji keeps only their alt text; the emoji are
+// described in statusMessageContentMetadata.REPLACE, as in a message.
+func TestParseContactStatusEmoji(t *testing.T) {
+	replace := `{"sticon":{"resources":[{"S":2,"E":18,"productId":"5ac1bfd5040ab15980c9b435","sticonId":"001","version":1,"resourceType":"STATIC"}]}}`
+	got := parseContact(map[string]any{"mid": "u12", "statusMessage": "早安(hattifatteners)!",
+		"statusMessageContentMetadata": map[string]any{"REPLACE": replace, "STICON_OWNERSHIP": `["5ac1bfd5040ab15980c9b435"]`}})
+	if got.Status != "早安(hattifatteners)!" {
+		t.Errorf("plain status changed: %q", got.Status)
+	}
+	if got.StatusText != "早安￼!" || len(got.StatusEmoji) != 1 {
+		t.Fatalf("emoji not parsed: text=%q runs=%+v", got.StatusText, got.StatusEmoji)
+	}
+	run := got.StatusEmoji[0]
+	if run.Start != 2 || run.End != 3 || run.URL != "https://stickershop.line-scdn.net/sticonshop/v1/sticon/5ac1bfd5040ab15980c9b435/android/001.png" {
+		t.Errorf("unexpected run: %+v", run)
+	}
+	plain := parseContact(map[string]any{"mid": "u13", "statusMessage": "今天也想出去走走。", "statusMessageContentMetadata": map[string]any{}})
+	if plain.StatusText != "" || plain.StatusEmoji != nil {
+		t.Errorf("plain status got emoji: %+v", plain.person)
+	}
+	// A range that does not fit the text is ignored, not drawn over it.
+	broken := parseContact(map[string]any{"mid": "u14", "statusMessage": "hi",
+		"statusMessageContentMetadata": map[string]any{"REPLACE": `{"sticon":{"resources":[{"S":0,"E":9,"productId":"p","sticonId":"1"}]}}`}})
+	if broken.StatusText != "" || broken.StatusEmoji != nil {
+		t.Errorf("out-of-range emoji used: %+v", broken.person)
+	}
+}

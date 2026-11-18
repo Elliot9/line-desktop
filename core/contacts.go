@@ -44,6 +44,10 @@ func parseContact(raw map[string]any) contactEntry {
 		name = text("displayName")
 	}
 	entry := contactEntry{person: person{ID: text("mid"), Name: name, Status: text("statusMessage"), Avatar: avatarURL(text("picturePath")), Friend: true}}
+	if metadata, ok := raw["statusMessageContentMetadata"].(map[string]any); ok {
+		replace, _ := metadata["REPLACE"].(string)
+		entry.StatusText, entry.StatusEmoji = statusEmoji(entry.Status, replace)
+	}
 	status := enumValue(raw["status"], contactStatusNames)
 	entry.blocked = status == 2 || status == 4 || status == 6
 	entry.deleted = status == 5 || status == 6

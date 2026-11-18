@@ -122,9 +122,16 @@
 .bubble.file-bubble, .message.own .bubble.file-bubble { background: #fff; border: 1px solid #e3e3e3; padding: 10px 12px; }
 .bubble.search-highlight { outline: 2px solid #f5c400; outline-offset: 2px; }
 .system-notice { background: rgba(0, 0, 0, 0.06); color: #666; font-size: 12px; border-radius: 12px; padding: 4px 12px; }
-.reply-quote { border-left: 2px solid rgba(0, 0, 0, 0.25); padding: 0 0 0 7px; margin: 2px 0 2px; }
-.reply-name { font-size: 11px; font-weight: 600; color: #444; }
-.reply-body { font-size: 12px; color: #666; }
+/* A reply, as in LINE: who and what it answers on top, a rule across the
+   bubble, then the reply. Clicking the top goes to the original message. */
+.bubble.has-reply { padding: 0; }
+.bubble.has-reply > .reply-quote { padding: 8px 12px 7px; border-bottom: 1px solid rgba(0, 0, 0, 0.1); }
+.bubble.has-reply > .reply-quote:hover { background: rgba(0, 0, 0, 0.04); }
+.bubble.has-reply > .bubble-text, .bubble.has-reply > flowbox { margin: 7px 12px 8px; }
+.reply-name { font-size: 12px; font-weight: 700; color: #1f1f1f; }
+.reply-body { font-size: 12px; color: rgba(0, 0, 0, 0.55); }
+.reply-thumb { border-radius: 4px; }
+.bubble.jump-highlight { outline: 2px solid #f5c400; outline-offset: 2px; }
 .emoji-text { font-size: 14px; }
 .message-meta { font-size: 10px; color: #a3a3a3; padding-bottom: 1px; }
 .message-meta .read { color: #a3a3a3; }
@@ -303,6 +310,9 @@ progressbar.update-progress > trough > progress { min-height: 6px; border-radius
 .profile-name { font-size: 20px; font-weight: 700; margin: 12px 24px 6px; color: #111; }
 .profile-status { font-size: 13px; color: #777; margin: 0 24px; }
 .profile-actions { margin: 26px 0 26px; }
+.group-card-members { margin: 14px 24px 0; }
+.rich-status flowboxchild { padding: 0 1px; min-width: 0; min-height: 0; }
+.rich-status picture { margin: 0 1px; }
 .line-window button.profile-action { padding: 4px; border-radius: 8px; }
 .profile-action-icon { min-width: 44px; min-height: 44px; border-radius: 999px; background: #f2f2f2; color: #333; }
 .profile-action-icon > * { margin: 11px; }

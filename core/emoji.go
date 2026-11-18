@@ -75,6 +75,20 @@ func parseReplace(body []byte, metadata string) []sticonResource {
 	return out
 }
 
+// statusEmoji reads the LINE emoji of a status message. LINE describes them
+// in statusMessageContentMetadata.REPLACE, as for a message's text, and
+// keeps only their alt text, such as "(hattifatteners)", in the message.
+func statusEmoji(status, replace string) (string, []emojiRun) {
+	if status == "" {
+		return "", nil
+	}
+	text, runs := inlineEmoji(status, parseReplace(nil, replace))
+	if len(runs) == 0 {
+		return "", nil
+	}
+	return text, runs
+}
+
 // inlineEmoji returns text with every sticon range replaced by U+FFFC and the
 // matching runs (rune offsets into the returned text).
 func inlineEmoji(text string, explicit []sticonResource) (string, []emojiRun) {
