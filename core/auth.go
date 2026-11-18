@@ -415,6 +415,7 @@ func (b *backend) handleEvent(ev workerEvent) {
 	p := result.profile
 	b.region = p.RegionCode
 	b.data.Profile = &person{ID: p.Mid, Name: p.DisplayName, Status: p.StatusMessage, Avatar: avatarURL(p.PicturePath)}
+	b.data.Profile.StatusText, b.data.Profile.StatusEmoji = statusEmoji(p.StatusMessage, p.StatusMessageContentMetadata["REPLACE"])
 	b.saveSession()
 	// The stream starts from LINE's current revision, as upstream beeper/line
 	// does. Nothing is kept in memory across runs and the snapshot below

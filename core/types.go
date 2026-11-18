@@ -33,7 +33,12 @@ type person struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
-	Avatar string `json:"avatar,omitempty"`
+	// StatusText is Status with each LINE emoji (sticon) replaced by U+FFFC
+	// and StatusEmoji the matching image runs; both are empty when the
+	// status message has no emoji. Status keeps LINE's alt text.
+	StatusText  string     `json:"status_text,omitempty"`
+	StatusEmoji []emojiRun `json:"status_emoji,omitempty"`
+	Avatar      string     `json:"avatar,omitempty"`
 	// Friend is false for people known only from group membership or chats.
 	Friend   bool `json:"friend"`
 	Official bool `json:"official,omitempty"`

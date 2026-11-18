@@ -1179,7 +1179,7 @@ class Application(Gtk.Application):
         contents.append(person_avatar(contact.get("id"), self.state.profile.get("id", ""), 52 if profile else 40))
         info = box(V, 3, valign=CENTER, hexpand=True)
         info.append(label(contact.get("name", "好友"), "chat-name" + (" profile" if profile else ""), ellipsize=True))
-        status = label(contact.get("status") or "", "chat-preview", ellipsize=True)
+        status = self.status_widget(contact, "chat-preview", 15)
         status.set_visible(bool(contact.get("status")))
         info.append(status)
         contents.append(info)
@@ -1787,6 +1787,49 @@ class Application(Gtk.Application):
             if rest.strip():
                 flow.insert(self.emoji_text_part(rest), -1)
         return flow, only_emoji
+
+    def status_widget(self, person, css, size, wrap=False):
+        """A status message as the phone shows it: LINE emoji drawn as
+        pictures. LINE keeps only their alt text, such as "(hattifatteners)",
+        in the message itself; the core sends the pictures as status_emoji
+        runs over status_text. wrap=True centres it over several lines (cards),
+        otherwise it is one line cut off at the end (lists)."""
+        plain = str(person.get("status") or "")
+        text = str(person.get("status_text") or "")
+        runs = [run for run in person.get("status_emoji") or [] if isinstance(run, dict) and run.get("url")]
+        if not text or not runs:
+            return label(plain, css, wrap=wrap, xalign=0.5 if wrap else 0.0, ellipsize=not wrap)
+        if wrap:
+            holder = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=False, column_spacing=0,
+                                 row_spacing=0, max_children_per_line=60)
+            holder.set_halign(CENTER)
+            holder.set_can_target(False)  # a card's clicks belong to the card
+            add = lambda widget: holder.insert(widget, -1)
+        else:
+            holder = box(H, 0)
+            holder.set_overflow(Gtk.Overflow.HIDDEN)
+            add = holder.append
+        for name in (css + " rich-status").split():
+            holder.add_css_class(name)
+        holder.set_tooltip_text(plain or None)
+        chars, cursor = list(text), 0
+
+        def words(part):
+            # Children take the class's font and colour from the holder.
+            for line in part.split("\n"):
+                if line:
+                    add(label(line, wrap=wrap, ellipsize=not wrap))
+        for run in sorted(runs, key=lambda r: int(r.get("start", 0) or 0)):
+            start, end = int(run.get("start", 0) or 0), int(run.get("end", 0) or 0)
+            if start < cursor or end <= start or end > len(chars):
+                continue
+            words("".join(chars[cursor:start]))
+            picture = self.sticker_picture(run["url"], size, size)
+            picture.set_valign(CENTER)
+            add(picture)
+            cursor = end
+        words("".join(chars[cursor:]))
+        return holder
 
     @staticmethod
     def emoji_text_part(text):
@@ -2776,13 +2819,14 @@ class Application(Gtk.Application):
         profile.append(portrait)
         profile.append(label(chat.get("name", "你的對話空間") if chat else "你的對話空間", "detail-name", wrap=True, xalign=0.5))
         if not chat or chat["id"] == KEEP_ID:
-            caption = ""
+            caption = None
         elif chat.get("kind") in ("group", "room"):
-            caption = f"成員 {self.member_count(chat)}"
+            caption = label(f"成員 {self.member_count(chat)}", "detail-caption", wrap=True, xalign=0.5)
         else:
-            caption = (self.state.contacts.get(chat["id"]) or {}).get("status") or ""
-        if caption:
-            profile.append(label(caption, "detail-caption", wrap=True, xalign=0.5))
+            contact = self.state.contacts.get(chat["id"]) or {}
+            caption = self.status_widget(contact, "detail-caption", 14, wrap=True) if contact.get("status") else None
+        if caption is not None:
+            profile.append(caption)
         self.detail_contents.append(profile)
         quick = box(H, 26, "quick-actions", halign=CENTER)
         muted = bool(chat and self.prefs.has("muted", chat["id"]))
@@ -3510,9 +3554,10 @@ class Application(Gtk.Application):
         top.add_overlay(portrait)
         card.append(top)
         card.append(label(contact.get("name", "LINE"), "profile-name", xalign=0.5, wrap=True))
-        status = contact.get("status") or ("" if not me else "把日子過成喜歡的樣子。")
-        if status:
-            card.append(label(status, "profile-status", xalign=0.5, wrap=True))
+        if contact.get("status"):
+            card.append(self.status_widget(contact, "profile-status", 18, wrap=True))
+        elif me:
+            card.append(label("把日子過成喜歡的樣子。", "profile-status", xalign=0.5, wrap=True))
         actions = box(H, 28, "profile-actions", halign=CENTER)
 
         def action(name, text, callback):

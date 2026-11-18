@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	gen "github.com/beeper/line/pkg"
 	"github.com/beeper/line/pkg/e2ee"
@@ -224,6 +225,21 @@ func diagnose(ctx context.Context, store sessionStore) error {
 	fmt.Printf("after filter: friends=%d official=%d favorites=%d filtered=%d\n", friends, official, favorites, hidden)
 	printShape("contact wrapper", wrappers)
 	printShape("contact", contacts)
+	// LINE emoji in status messages: how many REPLACE descriptions turn into
+	// pictures (counts only, nothing about the contacts themselves).
+	withEmoji, parsed, pictures := 0, 0, 0
+	for _, c := range contacts {
+		if meta, ok := c["statusMessageContentMetadata"].(map[string]any); ok && meta["REPLACE"] != nil && meta["REPLACE"] != "" {
+			withEmoji++
+			if entry := parseContact(c); len(entry.StatusEmoji) > 0 {
+				parsed++
+				pictures += len(entry.StatusEmoji)
+			} else {
+				describeUnparsedStatus(c, meta)
+			}
+		}
+	}
+	fmt.Printf("  status emoji: %d of %d status messages with emoji parsed, %d pictures\n", parsed, withEmoji, pictures)
 
 	mids, err := rawCall(ctx, token, "getAllChatMids", map[string]any{"withMemberChats": true, "withInvitedChats": true})
 	if err != nil {
@@ -729,4 +745,48 @@ func diagnoseVideo(ctx context.Context, store sessionStore) error {
 		fmt.Printf("%s: %d bytes in %s, starts %s\n", what, len(data), time.Since(started).Round(time.Millisecond), signature)
 	}
 	return nil
+}
+
+// describeUnparsedStatus prints the structure of a status message's REPLACE
+// that produced no pictures: key names, and whether each range fits the
+// text measured in UTF-16 units or in characters. No text or IDs.
+func describeUnparsedStatus(contact, meta map[string]any) {
+	status, _ := contact["statusMessage"].(string)
+	units, runes := len(utf16.Encode([]rune(status))), len([]rune(status))
+	raw, _ := meta["REPLACE"].(string)
+	var replace map[string]any
+	if err := json.Unmarshal([]byte(raw), &replace); err != nil {
+		fmt.Printf("    unparsed: REPLACE is not JSON (%T, %d bytes)\n", meta["REPLACE"], len(raw))
+		return
+	}
+	keys := make([]string, 0, len(replace))
+	for k := range replace {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Printf("    unparsed: REPLACE keys %v, text %d UTF-16 units / %d characters\n", keys, units, runes)
+	for _, k := range keys {
+		group, _ := replace[k].(map[string]any)
+		gkeys := make([]string, 0, len(group))
+		for gk := range group {
+			gkeys = append(gkeys, gk)
+		}
+		sort.Strings(gkeys)
+		fmt.Printf("      %s: keys %v\n", k, gkeys)
+		list, _ := group["resources"].([]any)
+		for i, item := range list {
+			r, _ := item.(map[string]any)
+			rkeys := make([]string, 0, len(r))
+			for rk, v := range r {
+				if s, ok := v.(string); ok && s == "" {
+					rk += "(empty)"
+				}
+				rkeys = append(rkeys, rk)
+			}
+			sort.Strings(rkeys)
+			start, _ := r["S"].(float64)
+			end, _ := r["E"].(float64)
+			fmt.Printf("        resource %d: keys %v S=%v E=%v fits-utf16=%v fits-chars=%v\n", i, rkeys, start, end, end <= float64(units) && start < end, end <= float64(runes) && start < end)
+		}
+	}
 }
