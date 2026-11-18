@@ -145,6 +145,20 @@
 .messages button.history-more:hover { background: rgba(0, 0, 0, 0.42); }
 
 
+/* 有新版本 · both versions, what changed, then download progress */
+.update-versions { margin: 2px 0 18px; }
+.update-version-title { font-size: 11px; color: #8a9e8f; }
+.update-version { font-size: 22px; font-weight: 700; color: #6f7d74; }
+.update-version.new { color: #06c755; }
+.update-arrow { font-size: 18px; color: #b5c0b9; margin-bottom: 3px; }
+.update-notes { font-size: 12px; line-height: 1.45; padding: 12px 14px; border-radius: 10px; background: #f4f7f5; margin-bottom: 14px; }
+.update-hint { font-size: 11px; line-height: 1.35; color: #8a9e8f; }
+.update-status { font-size: 12px; margin-top: 14px; }
+.update-status.error { color: #cf746c; }
+progressbar.update-progress { margin-top: 8px; }
+progressbar.update-progress > trough { min-height: 6px; border-radius: 3px; background: #e7ece9; }
+progressbar.update-progress > trough > progress { min-height: 6px; border-radius: 3px; background: #06c755; }
+
 /* Photo viewer · the photo over the darkened window, 上一張／下一張 at its sides (LINE PC) */
 @keyframes lightbox-in { from { opacity: 0; } to { opacity: 1; } }
 .lightbox { background: rgba(10, 10, 10, 0.9); color: #f2f2f2; animation: lightbox-in 140ms ease-out; }

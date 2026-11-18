@@ -38,7 +38,7 @@ LINE 官方只有 Windows 與 macOS 版。在 Linux 上，大家只能用 Wine �
 | **貼圖與表情貼** | 你在手機上擁有的所有貼圖與 **LINE 表情貼**、最近使用、搜尋貼圖包；表情貼可以和文字混在同一則訊息 |
 | **照片與檔案** | 收發照片與檔案、拖放、直接貼上剪貼簿圖片、螢幕截圖後傳送、照片檢視器（在聊天的照片間上一張／下一張） |
 | **好友** | 我的最愛、群組、好友、官方帳號分區，與手機上的清單一致；個人檔案卡 |
-| **桌面整合** | 系統通知、深色模式（跟隨系統或手動切換）、應用程式選單與 dock 圖示（開著時顯示未讀數）、LINE PC 版快捷鍵 |
+| **桌面整合** | 系統通知、深色模式（跟隨系統或手動切換）、應用程式選單與 dock 圖示（開著時顯示未讀數）、LINE PC 版快捷鍵、有新版本時一鍵更新 |
 | **本機小工具** | 聊天室記事、Keep 筆記（只存在這台電腦） |
 
 ## 截圖
@@ -102,7 +102,12 @@ cd line-desktop
 
 ### 更新與移除
 
-- **更新**：下載新版安裝包解壓縮覆蓋，或在原始碼資料夾執行 `git pull`。登入狀態與設定會保留。
+- **更新**：有新版本時，開啟 LINE 會顯示目前版本和最新版本，以及這次改了什麼。
+  - 按「立即更新」會自動下載、驗證並重新開啟 LINE，登入狀態與設定都會保留。
+  - 按「暫不更新」就照常使用目前的版本。
+  - 也可以在「設定 → 版本」按「檢查更新」，或關閉「開啟 LINE 時檢查有沒有新版本」。
+  - 1.0.2 以前的版本還沒有這個功能，請手動下載新版安裝包，解壓縮覆蓋原本的資料夾一次。
+  - 從原始碼執行的資料夾請用 `git pull` 更新。
 - **移除**：刪除 `line-desktop` 資料夾、`~/.local/share/matrix-line`（本機資料），以及 `~/.local/share/applications/org.matrixline.Desktop.*.desktop`。
 
 ## 開始使用
@@ -153,6 +158,7 @@ cd line-desktop
 ## 隱私與安全
 
 - 程式**直接連線到 LINE 的伺服器**，不經過任何第三方，也不收集任何資料。
+- 開啟時會向 GitHub 查詢有沒有新版本。這只是一般的下載請求，不帶任何帳號資料，可以在設定關閉。
 - 登入憑證存放在系統鑰匙圈（Secret Service）；取消「自動登入」時不會寫入。**密碼從不儲存。**
 - 本機資料（記事、Keep 筆記、偏好設定）存放在 `~/.local/share/matrix-line`，檔案權限為僅限本人讀寫。
 - 全部原始碼都在這裡，歡迎檢查。
@@ -191,6 +197,23 @@ scripts/package.sh amd64        # 打包到 dist/，附 SHA256
 ```
 
 歡迎提出 Issue 與 Pull Request！回報問題時，請附上發行版版本與 `./line-app --version` 的輸出。
+
+### 發布新版
+
+```bash
+echo 1.0.3 > VERSION
+scripts/package.sh amd64
+scripts/package.sh arm64
+gh release create v1.0.3 dist/line-desktop-linux-*.tar.gz* --title "LINE for Linux 1.0.3" --notes-file release-notes.md
+```
+
+已安裝的 LINE 下次開啟時就會詢問使用者要不要更新到這個版本。程式內的更新需要：
+
+- 標籤是 `v` 加上與 `VERSION` 相同的版本號（例如 `v1.0.3`）。
+- 安裝包檔名維持 `line-desktop-linux-amd64.tar.gz` 與 `line-desktop-linux-arm64.tar.gz`。
+- 不要標成 pre-release。標成 pre-release 的版本使用者不會收到，可以用來先自己測試。
+
+發布說明中「安裝」段落之前的內容，會顯示在更新對話框裡。
 
 ## 致謝與聲明
 

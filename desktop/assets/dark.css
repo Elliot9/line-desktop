@@ -120,3 +120,7 @@
 .line-window.dark .field-label { color: #999; }
 .line-window.dark .login-check check { border-color: #8a8a8a; }
 .line-window.dark .login-check check:checked { border-color: #06c755; }
+.line-window.dark .update-notes { background: #303030; }
+.line-window.dark .update-version { color: #b8b8b8; }
+.line-window.dark .update-version.new { color: #2fd27a; }
+.line-window.dark progressbar.update-progress > trough { background: #3a3a3a; }

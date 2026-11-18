@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 import sys
 
 from .launcher import LIVE_ID
@@ -48,7 +49,18 @@ def main():
     except (ImportError, ValueError) as error:
         print("需要 Linux 系統套件 python3-gi、gir1.2-gtk-4.0。請以系統 /usr/bin/python3 執行。", file=sys.stderr)
         return 1
-    return Application(options).run([sys.argv[0]])
+    app = Application(options)
+    status = app.run([sys.argv[0]])
+    if app.restart_requested:
+        # An update was installed: the new line-app takes over this process.
+        # LINE's name on the session bus goes with the old process image,
+        # so the new one becomes the running LINE instead of handing over to it.
+        script = Path(__file__).resolve().parent.parent / "line-app"
+        try:
+            os.execv(script, [str(script)])
+        except OSError:
+            print("LINE 已更新，請重新開啟。", file=sys.stderr)
+    return status
 
 
 if __name__ == "__main__":

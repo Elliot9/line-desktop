@@ -3,7 +3,10 @@ import base64
 import collections
 import datetime
 import json
+import os
 from pathlib import Path
+import shutil
+import threading
 import time
 import uuid
 
@@ -17,6 +20,7 @@ from . import art
 from . import avatar as avatar_module
 from . import launcher
 from . import ui as ui_module
+from . import updater
 from .art import Art, BASIC_EMOJI, MOODS
 from .ipc import Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
@@ -38,6 +42,9 @@ RENDER_GAP = 0.08
 LIST_PAGE = 60
 # Messages built at once for the open conversation; earlier ones on request.
 HISTORY_PAGE = 150
+# LINE left running in the background asks GitHub again for a newer version,
+# when its window is opened, at most this often (seconds).
+UPDATE_RECHECK = 24 * 3600
 # Notifications allowed per NOTIFY_WINDOW seconds; beyond that, one summary.
 NOTIFY_BURST = 4
 NOTIFY_WINDOW = 5.0
@@ -140,6 +147,16 @@ class Application(Gtk.Application):
         self.modal = None
         self.modal_kind = ""
         self.lightbox = None
+        self.modal_close = None
+        # The update dialog's widgets and release while it is open.
+        self.update = None
+        self.update_checking = False
+        self.update_checked_at = 0.0
+        # Offered (and not taken) in this run: only a later version is
+        # offered again until LINE is opened anew.
+        self.update_offered = ""
+        # Set when an update is installed: LINE opens again after quitting.
+        self.restart_requested = False
         # The unread count last sent to the dock.
         self.dock_count = 0
         self.collapsed = {"official"}
@@ -195,6 +212,8 @@ class Application(Gtk.Application):
     def activate(self, *_):
         if self.window:
             self.window.present()
+            if time.monotonic() - self.update_checked_at > UPDATE_RECHECK:
+                self.check_for_update()
             return
         # Window/dock icon: the installed launcher icon is named after the
         # application id; the bundled SVG covers runs without --install-menu.
@@ -289,6 +308,7 @@ class Application(Gtk.Application):
                 launcher.refresh()
                 return GLib.SOURCE_REMOVE
             GLib.idle_add(refresh_launcher)
+            self.check_for_update()
 
     def open_chat_action(self, _action, value):
         chat_id = value.get_string()
@@ -2522,6 +2542,8 @@ class Application(Gtk.Application):
 
     # ----------------------------------------------------------------- modals
     def open_modal(self, kind, title, body, actions=None, wide=False, css=""):
+        if self.modal_kind == "updating":
+            return None  # the update is installing; its dialog stays
         self.close_modal()
         layer = box(V, 0, "modal-overlay", hexpand=True, vexpand=True)
         card = box(V, 0, "modal " + css, halign=CENTER, valign=CENTER, vexpand=True)
@@ -2533,7 +2555,8 @@ class Application(Gtk.Application):
         heading.set_hexpand(True)
         heading.set_valign(CENTER)
         head.append(heading)
-        head.append(icon_button("x", self.close_modal, "關閉", 18))
+        self.modal_close = icon_button("x", self.close_modal, "關閉", 18)
+        head.append(self.modal_close)
         content.append(head)
         content.append(body)
         if actions is not None:
@@ -2556,12 +2579,13 @@ class Application(Gtk.Application):
         return layer
 
     def close_modal(self):
-        if not self.modal:
+        if not self.modal or self.modal_kind == "updating":
             return
         self.overlay.remove_overlay(self.modal)
         self.modal = None
         self.modal_kind = ""
         self.lightbox = None
+        self.update = None
         self.pages.set_can_focus(True)
 
     def modal_actions(self, primary=None, primary_text="確定", secondary_text="取消", error=False, center=False):
@@ -2733,7 +2757,8 @@ class Application(Gtk.Application):
         name.set_can_focus(False)
         body.append(self.field("顯示名稱", name))
         switches = {}
-        for key, title in (("notifications", "訊息通知"), ("enter_send", "按 Enter 傳送訊息（關閉時改按 Alt+Enter）")):
+        for key, title in (("notifications", "訊息通知"), ("enter_send", "按 Enter 傳送訊息（關閉時改按 Alt+Enter）"),
+                           ("check_updates", "開啟 LINE 時檢查有沒有新版本")):
             row = box(H, 0, "toggle-line")
             text = label(title)
             text.set_hexpand(True)
@@ -2755,7 +2780,7 @@ class Application(Gtk.Application):
         body.append(self.field("螢幕顯示模式", theme_choice))
         self.theme_choice = theme_choice
         body.append(label("顯示名稱由 LINE 帳號提供。設定保存在這台電腦；訊息通知使用桌面系統通知。", "subtle", wrap=True))
-        account = box(V, 0, "help-block last")
+        account = box(V, 0, "help-block")
         account.set_margin_top(8)
         account.append(label("帳號與連線", "help-title"))
         if self.state.mode == "demo":
@@ -2780,13 +2805,14 @@ class Application(Gtk.Application):
         controls.append(self.logout_button)
         account.append(controls)
         body.append(account)
+        body.append(self.version_block())
 
         def save():
             try:
                 font = sizes[size_choice.get_selected()][0]
                 self.window.remove_css_class(f"font-{self.prefs.settings['font_size']}")
                 self.prefs.save_settings(notifications=switches["notifications"].get_active(), enter_send=switches["enter_send"].get_active(), font_size=font,
-                                         theme=themes[theme_choice.get_selected()][0])
+                                         theme=themes[theme_choice.get_selected()][0], check_updates=switches["check_updates"].get_active())
                 self.window.add_css_class(f"font-{font}")
                 self.apply_theme()
             except OSError:
@@ -2797,6 +2823,230 @@ class Application(Gtk.Application):
             self.toast("設定已儲存")
         self.settings_save = save
         self.open_modal("settings", "設定", body, self.modal_actions(save, "儲存設定", "關閉"))
+
+    # ---------------------------------------------------------------- updates
+    def version_block(self):
+        """設定's 版本 section: the version of this folder and 檢查更新."""
+        block = box(V, 0, "help-block last")
+        block.append(label("版本", "help-title"))
+        kind = updater.install_kind()
+        how = {"source": "從原始碼執行，請在程式資料夾執行 git pull 更新。",
+               "readonly": "程式所在的資料夾無法寫入，新版需要手動下載安裝。",
+               "unsupported": "這台電腦的處理器沒有對應的安裝包，請從原始碼更新。"}.get(kind, "")
+        block.append(label(f"LINE for Linux {updater.current_version() or '（版本不明）'}" + (" · " + how if how else ""), "help-text", wrap=True))
+        self.update_button = None
+        if not self.options.demo:
+            row = box(H, 9)
+            row.set_margin_top(10)
+            self.update_button = button(None, lambda: self.check_for_update(manual=True), "secondary", text="檢查更新")
+            self.update_button.set_sensitive(not self.update_checking)
+            row.append(self.update_button)
+            block.append(row)
+        return block
+
+    def check_for_update(self, manual=False):
+        """Asks GitHub for a newer release off the main loop. When LINE opens
+        it speaks up only about a newer version; 檢查更新 in 設定 also says
+        when this version is current or GitHub cannot be reached."""
+        if self.update_checking or self.modal_kind == "updating":
+            return
+        if not manual and (self.options.demo or self.options.smoke_test or not self.prefs.settings["check_updates"]
+                           or os.environ.get("LINE_APP_NO_UPDATE_CHECK") or updater.install_kind() != "release"):
+            return
+        self.update_checking = True
+        self.update_checked_at = time.monotonic()
+        if getattr(self, "update_button", None) is not None:
+            self.update_button.set_sensitive(False)
+
+        def work():
+            try:
+                result = updater.check()
+            except Exception as error:  # offline, GitHub unreachable or an odd reply
+                result = error
+            self.dispatch(self.update_checked, result, manual)
+        threading.Thread(target=work, daemon=True, name="line-update-check").start()
+
+    def update_checked(self, result, manual):
+        self.update_checking = False
+        if getattr(self, "update_button", None) is not None:
+            self.update_button.set_sensitive(True)
+        if isinstance(result, Exception):
+            if manual:
+                self.toast("無法檢查更新。請確認網路連線後再試一次。", True)
+            return
+        if result is None:
+            if manual:
+                self.toast(f"已經是最新版本（{updater.current_version()}）。")
+            return
+        if manual or result.version != self.update_offered:
+            self.offer_update(result, manual)
+
+    def offer_update(self, release, manual=False):
+        """有新版本: both versions and what changed. 立即更新 installs it and
+        opens LINE again; 暫不更新 leaves LINE as it is."""
+        if self.modal_kind == "updating":
+            return
+        if self.modal and not manual:
+            # A dialog the person opened stays; ask once it is closed.
+            def later():
+                if not self.window or self.update_offered == release.version:
+                    return GLib.SOURCE_REMOVE
+                if self.modal:
+                    return GLib.SOURCE_CONTINUE
+                self.offer_update(release)
+                return GLib.SOURCE_REMOVE
+            GLib.timeout_add(1000, later)
+            return
+        self.update_offered = release.version
+        kind = updater.install_kind()
+        body = box(V, 0, "update-body")
+        versions = box(H, 26, "update-versions", halign=CENTER)
+        for title, value, css in (("目前版本", updater.current_version() or "—", ""), ("最新版本", release.version, " new")):
+            column = box(V, 4)
+            column.append(label(title, "update-version-title", xalign=0.5))
+            column.append(label(value, "update-version" + css, xalign=0.5))
+            versions.append(column)
+            if css == "":
+                arrow = label("→", "update-arrow", xalign=0.5)
+                arrow.set_valign(END)
+                versions.append(arrow)
+        body.append(versions)
+        markup = updater.notes_markup(release.notes)
+        if markup:
+            notes = label("", "update-notes", wrap=True)
+            notes.set_markup(markup)
+            body.append(notes)
+        size = f"約 {release.size / 1048576:.0f} MB" if release.size >= 1048576 else "新版"
+        hint = {"release": f"更新會下載{size}的安裝包，驗證後替換程式並重新開啟 LINE。登入狀態、聊天與設定都會保留。",
+                "source": "這個資料夾是從原始碼執行，請在程式資料夾執行 git pull 更新。",
+                "readonly": f"沒有權限寫入程式所在的資料夾（{updater.ROOT}），請到下載頁取得新版安裝包。"}.get(
+                    kind, "這台電腦的處理器沒有對應的安裝包，請從原始碼更新。")
+        body.append(label(hint, "update-hint", wrap=True))
+        status = label("", "update-status", wrap=True)
+        status.set_visible(False)
+        bar = Gtk.ProgressBar()
+        bar.add_css_class("update-progress")
+        bar.set_visible(False)
+        row = box(H, 9, "modal-actions", halign=END)
+        later = button(None, self.close_modal, "secondary", text="暫不更新" if kind == "release" else "關閉")
+        go = (button(None, self.start_update, "primary", text="立即更新") if kind == "release"
+              else button(None, lambda: self.open_uri(release.page), "primary", text="前往下載頁"))
+        stop = button(None, self.cancel_update, "secondary", text="取消更新")
+        stop.set_visible(False)
+        for item in (stop, later, go):
+            row.append(item)
+        actions = box(V, 0)
+        for item in (status, bar, row):
+            actions.append(item)
+        self.open_modal("update", "有新版本可以更新", body, actions)
+        self.update = {"release": release, "status": status, "bar": bar, "later": later, "go": go, "stop": stop, "cancel": None}
+
+    def update_status(self, text, error=False):
+        status = self.update["status"]
+        status.set_text(text)
+        status.set_visible(bool(text))
+        status.add_css_class("error") if error else status.remove_css_class("error")
+
+    def start_update(self):
+        dialog = self.update
+        if dialog is None or self.modal_kind != "update":
+            return
+        self.modal_kind = "updating"  # the dialog stays until it succeeds or fails
+        if self.modal_close is not None:
+            self.modal_close.set_visible(False)
+        dialog["later"].set_visible(False)
+        dialog["go"].set_visible(False)
+        dialog["stop"].set_visible(True)
+        dialog["stop"].set_sensitive(True)
+        dialog["bar"].set_fraction(0)
+        dialog["bar"].set_visible(True)
+        self.update_status("正在下載新版…")
+        cancel = threading.Event()
+        dialog["cancel"] = cancel
+        shown = [0.0]
+
+        def progress(received, total):
+            now = time.monotonic()
+            if now - shown[0] >= 0.1 or received >= total:
+                shown[0] = now
+                self.dispatch(self.update_progress, dialog, received, total)
+
+        def work():
+            try:
+                staging, tree = updater.prepare(dialog["release"], progress=progress, cancelled=cancel.is_set)
+            except updater.Cancelled:
+                self.dispatch(self.update_failed, dialog, "")
+            except updater.UpdateError as error:
+                self.dispatch(self.update_failed, dialog, str(error))
+            except Exception:  # network, disk space or a damaged archive
+                self.dispatch(self.update_failed, dialog, "下載或解開新版時發生問題。請確認網路連線與磁碟空間後再試一次。")
+            else:
+                self.dispatch(self.update_downloaded, dialog, staging, tree)
+        threading.Thread(target=work, daemon=True, name="line-update").start()
+
+    def update_progress(self, dialog, received, total):
+        if self.update is not dialog or dialog["cancel"].is_set():
+            return
+        megabytes = received / 1048576
+        if total:
+            dialog["bar"].set_fraction(min(1.0, received / total))
+            self.update_status(f"正在下載新版… {megabytes:.1f} / {total / 1048576:.1f} MB")
+        else:
+            dialog["bar"].pulse()
+            self.update_status(f"正在下載新版… {megabytes:.1f} MB")
+
+    def cancel_update(self):
+        dialog = self.update
+        if dialog is None or dialog["cancel"] is None:
+            return
+        dialog["cancel"].set()
+        dialog["stop"].set_sensitive(False)
+        self.update_status("正在取消…")
+
+    def update_failed(self, dialog, message):
+        if self.update is not dialog:
+            return
+        self.modal_kind = "update"
+        if not message:
+            self.close_modal()
+            self.toast("已取消更新，繼續使用目前的版本。")
+            return
+        if self.modal_close is not None:
+            self.modal_close.set_visible(True)
+        dialog["bar"].set_visible(False)
+        dialog["stop"].set_visible(False)
+        dialog["later"].set_visible(True)
+        dialog["go"].get_child().set_text("重新嘗試")
+        dialog["go"].set_visible(True)
+        self.update_status(message, True)
+
+    def update_downloaded(self, dialog, staging, tree):
+        if self.update is not dialog:
+            shutil.rmtree(staging, ignore_errors=True)
+            return
+        if dialog["cancel"].is_set():
+            shutil.rmtree(staging, ignore_errors=True)
+            self.update_failed(dialog, "")
+            return
+        dialog["stop"].set_visible(False)
+        try:
+            updater.install(tree)
+        except (updater.UpdateError, OSError) as error:
+            shutil.rmtree(staging, ignore_errors=True)
+            self.update_failed(dialog, str(error) if isinstance(error, updater.UpdateError) else "無法替換程式檔案，已保留原本的版本。")
+            return
+        shutil.rmtree(staging, ignore_errors=True)
+        dialog["bar"].set_fraction(1)
+        self.update_status(f"已更新到 {dialog['release'].version}，正在重新開啟 LINE…")
+        GLib.timeout_add(800, self.restart_for_update)
+
+    def restart_for_update(self):
+        """Quits; __main__ then starts the new version's line-app in this
+        process once LINE has let go of its name on the session bus."""
+        self.restart_requested = True
+        self.modal_kind = ""
+        self.quit()
+        return GLib.SOURCE_REMOVE
 
     def open_profile(self, person_id):
         """LINE profile card: cover, large round photo, name, status message
@@ -3802,7 +4052,10 @@ class Application(Gtk.Application):
             else:
                 dialog.close()
         self.dialogs.clear()
-        self.close_modal()
+        # 有新版本 is about the program, not the account: it stays when the
+        # core reports that nobody is logged in (as it does while LINE opens).
+        if self.modal_kind not in ("update", "updating"):
+            self.close_modal()
         if self.context_popover is not None:
             self.context_popover.popdown()
         self.sticker_popover.popdown()
@@ -4325,6 +4578,7 @@ class Application(Gtk.Application):
                            and {"散步路線提案.pdf", "檔案大小：2.4 KB"} <= set(self.labels_in(card)))
                 self.check_photo_viewer()
                 self.check_dock_count()
+                self.check_update_prompt()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
                 self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
@@ -4472,6 +4726,44 @@ class Application(Gtk.Application):
                    and sent[-1][1] == {"count": unread, "count-visible": True})
         self.state.chats["demo-family"]["unread"] -= 1
         self.render_rail()
+
+    def check_update_prompt(self):
+        current = updater.current_version()
+        self.open_settings()
+        self.check("設定 shows this version", f"LINE for Linux {current}" in " ".join(self.labels_in(self.modal)))
+        self.close_modal()
+        release = updater.Release(version="99.0.0", notes="# LINE for Linux 99.0.0\n\n## 改善\n\n- **更快**\n\n## 安裝／更新\n\n```\ncurl -LO x\n```",
+                                  page="https://example.invalid", url="https://example.invalid/a.tar.gz", size=7 * 1048576, sha256="", sha256_url="")
+        real_kind, real_prepare = updater.install_kind, updater.prepare
+        go = threading.Event()
+
+        def prepare(*_args, **_kwargs):
+            go.wait(5)
+            raise updater.UpdateError("測試：下載失敗。")
+        updater.install_kind = lambda root=None: "release"
+        updater.prepare = prepare
+        try:
+            self.offer_update(release, manual=True)
+            texts = self.labels_in(self.modal) if self.modal else []
+            self.check("有新版本 shows both versions and what changed, not how to install",
+                       self.modal_kind == "update" and current in texts and "99.0.0" in texts and "暫不更新" in texts and "立即更新" in texts
+                       and any("更快" in text for text in texts) and not any("curl" in text for text in texts))
+            self.update["go"].emit("clicked")
+            self.window_key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0))
+            self.close_modal()
+            self.check("the dialog stays while the update is downloading", self.modal_kind == "updating" and self.update is not None
+                       and self.update["bar"].get_visible() and self.update["stop"].get_visible() and not self.modal_close.get_visible())
+            go.set()
+            failed = self.wait_for(lambda: self.modal_kind == "update")
+            self.check("a failed update says why, offers 重新嘗試 and can be closed",
+                       failed and self.update["status"].get_text() == "測試：下載失敗。" and self.update["go"].get_child().get_text() == "重新嘗試"
+                       and self.modal_close.get_visible())
+            self.update["later"].emit("clicked")
+            self.check("暫不更新 goes back to LINE", self.modal is None and self.update is None and not self.restart_requested)
+        finally:
+            go.set()
+            updater.install_kind, updater.prepare = real_kind, real_prepare
+            self.close_modal()
 
     @staticmethod
     def wait_for(predicate, seconds=3):
