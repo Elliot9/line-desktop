@@ -125,7 +125,19 @@ func (b *backend) resolvePeople(friendByID map[string]person) {
 	}
 	c := b.api()
 	for start := 0; start < len(ids); start += 100 {
-		found, err := c.GetContactsV2(ids[start:min(start+100, len(ids))])
+		batch := ids[start:min(start+100, len(ids))]
+		// The full record, as for friends: it also carries the LINE emoji of
+		// their status messages, which the library's Contact leaves out.
+		if records, err := fetchContacts(b.ctx, b.session.AccessToken, batch); err == nil {
+			for _, record := range records {
+				if p := record.person; p.ID != "" {
+					p.Friend, p.Favorite = false, false // known from a group or chat only
+					people[p.ID] = p
+				}
+			}
+			continue
+		}
+		found, err := c.GetContactsV2(batch)
 		if err != nil {
 			break
 		}

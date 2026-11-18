@@ -14,7 +14,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Graphene", "1.0")
-from gi.repository import Gdk, Gio, GLib, GObject, Graphene, Gtk
+from gi.repository import Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango
 
 from . import art
 from . import avatar as avatar_module
@@ -1790,45 +1790,78 @@ class Application(Gtk.Application):
 
     def status_widget(self, person, css, size, wrap=False):
         """A status message as the phone shows it: LINE emoji drawn as
-        pictures. LINE keeps only their alt text, such as "(hattifatteners)",
-        in the message itself; the core sends the pictures as status_emoji
-        runs over status_text. wrap=True centres it over several lines (cards),
-        otherwise it is one line cut off at the end (lists)."""
+        pictures at the size of the text. LINE keeps only their alt text,
+        such as "(hattifatteners)", in the message itself; the core sends the
+        pictures as status_emoji runs over status_text.
+
+        wrap=True lays it out as centred text over as many lines as needed,
+        keeping line breaks (cards); otherwise it is one line cut off at the
+        end (lists). If any emoji cannot be loaded, the plain status with its
+        alt text is shown instead, as before."""
         plain = str(person.get("status") or "")
         text = str(person.get("status_text") or "")
-        runs = [run for run in person.get("status_emoji") or [] if isinstance(run, dict) and run.get("url")]
-        if not text or not runs:
+        pieces, cursor = [], 0
+        for run in sorted((r for r in person.get("status_emoji") or [] if isinstance(r, dict) and r.get("url")),
+                          key=lambda r: int(r.get("start", 0) or 0)):
+            first, last = int(run.get("start", 0) or 0), int(run.get("end", 0) or 0)
+            if first < cursor or last <= first or last > len(text):
+                continue
+            pieces += [("text", text[cursor:first]), ("emoji", run["url"])]
+            cursor = last
+        pieces.append(("text", text[cursor:]))
+        if not text or not any(kind == "emoji" for kind, _ in pieces):
             return label(plain, css, wrap=wrap, xalign=0.5 if wrap else 0.0, ellipsize=not wrap)
+        failed = []
         if wrap:
-            holder = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=False, column_spacing=0,
-                                 row_spacing=0, max_children_per_line=60)
-            holder.set_halign(CENTER)
-            holder.set_can_target(False)  # a card's clicks belong to the card
-            add = lambda widget: holder.insert(widget, -1)
+            view = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                justification=Gtk.Justification.CENTER)
+            view.set_can_target(False)  # a card's clicks belong to the card
+            view.set_can_focus(False)
+            buffer = view.get_buffer()
+            # Inline pictures stand on the text's baseline, which puts an
+            # emoji as tall as the line above the text; lower it a little.
+            lowered = buffer.create_tag(None, rise=-int(size * 0.22 * Pango.SCALE))
+
+            def fall_back():
+                if not failed:
+                    failed.append(True)
+                    buffer.set_text(plain)  # removes the pictures with their anchors
+            for kind, value in pieces:
+                if kind == "text":
+                    buffer.insert(buffer.get_end_iter(), value)
+                else:
+                    at = buffer.get_end_iter().get_offset()
+                    anchor = buffer.create_child_anchor(buffer.get_end_iter())
+                    buffer.apply_tag(lowered, buffer.get_iter_at_offset(at), buffer.get_end_iter())
+                    view.add_child_at_anchor(self.sticker_picture(value, size, size, fixed=True, on_failed=fall_back), anchor)
+            holder = view
         else:
-            holder = box(H, 0)
-            holder.set_overflow(Gtk.Overflow.HIDDEN)
-            add = holder.append
+            line = box(H, 0)
+            line.set_valign(CENTER)
+
+            def fall_back():
+                if not failed:
+                    failed.append(True)
+                    clear(line)
+                    line.append(label(plain.replace("\n", " ")))
+            for kind, value in pieces:
+                if kind == "text":
+                    if value:
+                        line.append(label(value.replace("\n", " ")))
+                else:
+                    picture = self.sticker_picture(value, size, size, fixed=True, on_failed=fall_back)
+                    picture.set_valign(CENTER)
+                    line.append(picture)
+            # The line is clipped at the row's end: a box of pictures and
+            # labels is otherwise as wide as all of them, which widened the
+            # whole sidebar for a status with many emoji.
+            holder = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.EXTERNAL, vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                        propagate_natural_height=True, hexpand=True)
+            holder.set_can_target(False)
+            holder.set_child(line)
         for name in (css + " rich-status").split():
             holder.add_css_class(name)
         holder.set_tooltip_text(plain or None)
-        chars, cursor = list(text), 0
-
-        def words(part):
-            # Children take the class's font and colour from the holder.
-            for line in part.split("\n"):
-                if line:
-                    add(label(line, wrap=wrap, ellipsize=not wrap))
-        for run in sorted(runs, key=lambda r: int(r.get("start", 0) or 0)):
-            start, end = int(run.get("start", 0) or 0), int(run.get("end", 0) or 0)
-            if start < cursor or end <= start or end > len(chars):
-                continue
-            words("".join(chars[cursor:start]))
-            picture = self.sticker_picture(run["url"], size, size)
-            picture.set_valign(CENTER)
-            add(picture)
-            cursor = end
-        words("".join(chars[cursor:]))
         return holder
 
     @staticmethod
@@ -4087,10 +4120,16 @@ class Application(Gtk.Application):
             self.compose.grab_focus()
         self.pictures.load(url, loaded)
 
-    def sticker_picture(self, url, width, height):
+    def sticker_picture(self, url, width, height, fixed=False, on_failed=None):
+        """A sticker or LINE emoji picture. fixed=True draws it at exactly
+        width x height (inline with text); otherwise it fills what it is
+        given. on_failed runs if the picture cannot be loaded."""
         picture = Gtk.Picture()
         picture.set_size_request(width, height)
         picture.set_can_shrink(True)
+        size = max(width, height) if fixed else 0
+        if fixed:
+            picture.set_halign(CENTER)
         if url:
             # Decoded once, on a worker, at twice the shown size (HiDPI); the
             # conversation is redrawn often and used to decode every sticker
@@ -4098,25 +4137,38 @@ class Application(Gtk.Application):
             key = (url, max(width, height) * 2)
             cached = self.sticker_textures.get(key)
             if cached is not None:
-                picture.set_paintable(cached)
+                self.show_sticker(picture, cached, size)
             elif key in self.sticker_waiting:
-                self.sticker_waiting[key].append(picture)
+                self.sticker_waiting[key].append((picture, size, on_failed))
             else:
                 # The widgets wait here, on the main loop; the callbacks given
                 # to the loader's threads must not hold a widget (its last
                 # reference could then be dropped on a worker thread).
-                self.sticker_waiting[key] = [picture]
+                self.sticker_waiting[key] = [(picture, size, on_failed)]
                 if not self.pictures.load(url, lambda texture: self.sticker_loaded(key, texture),
-                                          failed=lambda: self.sticker_waiting.pop(key, None), size=key[1]):
-                    self.sticker_waiting.pop(key, None)
+                                          failed=lambda: self.sticker_failed(key), size=key[1]):
+                    self.sticker_failed(key)
+        elif on_failed:
+            on_failed()
         return picture
+
+    @staticmethod
+    def show_sticker(picture, texture, size):
+        # A texture decoded at twice the size would otherwise be drawn at
+        # that size: its pixel size is a Gtk.Picture's natural size.
+        picture.set_paintable(InlineEmoji(texture, size, None) if size else texture)
 
     def sticker_loaded(self, key, texture):
         if len(self.sticker_textures) >= 300:
             self.sticker_textures.pop(next(iter(self.sticker_textures)))
         self.sticker_textures[key] = texture
-        for picture in self.sticker_waiting.pop(key, []):
-            picture.set_paintable(texture)
+        for picture, size, _failed in self.sticker_waiting.pop(key, []):
+            self.show_sticker(picture, texture, size)
+
+    def sticker_failed(self, key):
+        for _picture, _size, on_failed in self.sticker_waiting.pop(key, []):
+            if on_failed:
+                on_failed()
 
     # ------------------------------------------------------------------ files
     def can_attach(self):
