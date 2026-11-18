@@ -201,7 +201,7 @@ scripts/package.sh amd64        # 打包到 dist/，附 SHA256
 
 ### 發布新版
 
-先把 [CHANGELOG.md](CHANGELOG.md) 的「未發布」改成「1.0.3 · 日期」，再新增一個空的「未發布」段落。那一段就是發布說明：
+先把 [CHANGELOG.md](CHANGELOG.md) 的「未發布」改成「1.0.3 · 日期」，那一段就是發布說明（之後有新改動時再新增「未發布」段落）：
 
 ```bash
 echo 1.0.3 > VERSION
