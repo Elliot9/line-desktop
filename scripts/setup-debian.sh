@@ -7,13 +7,13 @@ if [[ $(uname -s) != Linux ]]; then
 fi
 
 if [[ ! -r /etc/os-release ]]; then
-    echo '找不到 /etc/os-release，請手動安裝 README 中的 GTK 套件。' >&2
+    echo '找不到 /etc/os-release，請手動安裝 docs/GUIDE.zh-TW.md「其他發行版」列出的套件。' >&2
     exit 1
 fi
 source /etc/os-release
 case "${ID:-} ${ID_LIKE:-}" in
     *ubuntu*|*debian*) ;;
-    *) echo '自動安裝目前只支援 Ubuntu／Debian。請參考 README。' >&2; exit 1 ;;
+    *) echo '自動安裝目前只支援 Ubuntu／Debian。其他發行版請參考 docs/GUIDE.zh-TW.md。' >&2; exit 1 ;;
 esac
 
 packages=(python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0

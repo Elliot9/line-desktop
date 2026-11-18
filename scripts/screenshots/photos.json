@@ -1,0 +1,27 @@
+{
+  "license": "Unsplash License (https://unsplash.com/license): free to use, no permission needed. The people shown are models in stock photos; their names and conversations in the screenshots are invented.",
+  "avatars": {
+    "me":      {"photo": "photo-1758691737605-69a0e78bd193", "page": "https://unsplash.com/photos/APjRQ59peUg", "by": "Vitaly Gariev"},
+    "yating":  {"photo": "photo-1589525231707-f2de2428f59c", "page": "https://unsplash.com/photos/i5R8hbZFDdc", "by": "Thanh Duc PHAN"},
+    "siyu":    {"photo": "photo-1513097633097-329a3a64e0d4", "page": "https://unsplash.com/photos/jGZITdFhmts", "by": "Le Minh Phuong"},
+    "peishan": {"photo": "photo-1758600587839-56ba05596c69", "page": "https://unsplash.com/photos/s3aDHKxHZSc", "by": "Vitaly Gariev"},
+    "xinyi":   {"photo": "photo-1600481176431-47ad2ab2745d", "page": "https://unsplash.com/photos/OuxJHYeUYpk", "by": "panitan punpuang"},
+    "mom":     {"photo": "photo-1589553009868-c7b2bb474531", "page": "https://unsplash.com/photos/9N3cvZVm6HM", "by": "Hussan Amir"},
+    "shihan":  {"photo": "photo-1758600587815-b654d1405e83", "page": "https://unsplash.com/photos/ZoSb5J3jU28", "by": "Vitaly Gariev"},
+    "guanyu":  {"photo": "photo-1544168190-79c17527004f", "page": "https://unsplash.com/photos/WC7KIHo13Fc", "by": "Juan Encalada"},
+    "bohan":   {"photo": "photo-1681097561932-36d0df02b379", "page": "https://unsplash.com/photos/ntLkvt6OZvQ", "by": "Anky Lau"},
+    "jiahao":  {"photo": "photo-1616326431985-b9f89ebc6ab7", "page": "https://unsplash.com/photos/1assCt31JVc", "by": "Pj Go"},
+    "grandpa": {"photo": "photo-1488820098099-8d4a4723a490", "page": "https://unsplash.com/photos/i9uIhSlOWYc", "by": "Z"},
+    "zixuan":  {"photo": "photo-1518725522904-4b3939358342", "page": "https://unsplash.com/photos/TBUA5KHJn6k", "by": "Arjunsyah"}
+  },
+  "pictures": {
+    "cat":       {"photo": "photo-1627157766791-4eeb96934b5d", "page": "https://unsplash.com/photos/tuomgxdoIP4", "by": "Patrick Slade"},
+    "trail":     {"photo": "photo-1583395145517-1e3177037600", "page": "https://unsplash.com/photos/L6xHmv2R3G4", "by": "Sam Chang"},
+    "ridge":     {"photo": "photo-1591356442491-99d7775bc7b1", "page": "https://unsplash.com/photos/V038uzHD42A", "by": "Clement Souchet"},
+    "noodles":   {"photo": "photo-1651330395670-1680a92028bc", "page": "https://unsplash.com/photos/nIiuEQJlZs4", "by": "Luna Wang"},
+    "dimsum":    {"photo": "photo-1707013533606-62919aa3aa29", "page": "https://unsplash.com/photos/3t04amJQ2N8", "by": "Zhe ZHANG"},
+    "dinner":    {"photo": "photo-1597215753169-e717ab0acbe5", "page": "https://unsplash.com/photos/YRQAcYcBECw", "by": "Durian Bullet"},
+    "latte":     {"photo": "photo-1593487147363-7dcd39d26842", "page": "https://unsplash.com/photos/sYhN3ks12EM", "by": "Jasmine Huang"},
+    "cafe":      {"photo": "photo-1573655641609-d3887a07df1e", "page": "https://unsplash.com/photos/x6K6KtUo3YE", "by": "Esther T"}
+  }
+}

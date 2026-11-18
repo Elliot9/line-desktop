@@ -2,229 +2,130 @@
 
 # LINE for Linux
 
-**在 Linux 上用 LINE，終於不必再開 Wine 或虛擬機。**
+**Use LINE on Linux, natively. No Wine, no virtual machine, no browser tab.**
 
-原生 GTK 4 桌面用戶端 · 端對端加密 · 介面對照官方 LINE PC 版
+A native GTK 4 desktop client · end-to-end encrypted · laid out like the official LINE PC app
 
-[![最新版本](https://img.shields.io/github/v/release/Elliot9/line-desktop?label=%E4%B8%8B%E8%BC%89&color=06c755)](https://github.com/Elliot9/line-desktop/releases/latest)
-![平台](https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-333)
-![GTK 4](https://img.shields.io/badge/GTK-4-4a86cf)
+**English** · [繁體中文](README.zh-TW.md)
 
-<img src="docs/images/chat-light.png" alt="LINE for Linux 聊天畫面" width="820">
+[![Latest release](https://img.shields.io/github/v/release/Elliot9/line-desktop?label=download&color=06c755)](https://github.com/Elliot9/line-desktop/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Elliot9/line-desktop/total?color=06c755)](https://github.com/Elliot9/line-desktop/releases)
+![Platforms](https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-333)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-*An unofficial native LINE desktop client for Linux (GTK 4). The UI is in Traditional Chinese.*
+**[Download](https://github.com/Elliot9/line-desktop/releases/latest)** · [Install](#install) · [What's new](CHANGELOG.md) · [Guide](docs/GUIDE.md)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-dark.webp">
+  <img src="docs/images/chat-light.webp" alt="LINE for Linux: a group chat planning a weekend hike, with photos, a reply and read receipts" width="860">
+</picture>
 
 </div>
 
----
+> [!NOTE]
+> This is an unofficial client. It is not made, endorsed or supported by LY Corporation (LINE). The app's interface is in Traditional Chinese.
 
-## 為什麼做這個
+## Why
 
-LINE 官方只有 Windows 與 macOS 版。在 Linux 上，大家只能用 Wine 跑 Windows 版（常常字型破碎、輸入法失靈、更新就壞），或開 Chrome 擴充功能（介面陽春、要一直開著瀏覽器）。
+LINE only ships for Windows and macOS. On Linux that has meant the Windows app under Wine or the Chrome extension. LINE for Linux is written from scratch for the Linux desktop instead.
 
-**LINE for Linux** 是從零寫起的原生 Linux 應用程式：
+| | LINE for Linux | Windows app in Wine | Chrome extension |
+| --- | :---: | :---: | :---: |
+| Native window, system fonts and input methods | ✅ | ⚠️ often broken | ✅ |
+| Desktop notifications and an unread count on the dock | ✅ | ⚠️ | ⚠️ |
+| Runs without a browser open | ✅ | ✅ | ❌ |
+| Updates itself when you agree to | ✅ | ⚠️ updates can break it | ✅ |
 
-- 🐧 **真正的原生程式**：GTK 4 介面，跟系統字型、輸入法、深色主題、通知、鑰匙圈整合。沒有 Wine，也沒有內嵌瀏覽器。
-- 🔒 **端對端加密**：使用 LINE 的 Letter Sealing 加密收發訊息，直接連到 LINE，不經過任何第三方伺服器。
-- 💚 **熟悉的介面**：版面、配色、貼圖面板、登入畫面都對照官方 LINE PC 版，打開就會用。
+## Features
 
-## 功能
+- 💬 **Chats and groups** with unread counts, pins, mute, search, drafts, replies, unsend, read receipts, and older messages as you scroll up.
+- 🔒 **End-to-end encrypted** with LINE's Letter Sealing. It talks to LINE directly, with no server in between.
+- 😊 **Your stickers and LINE emoji**, everything you own on your phone, with recents and search. Emoji mix with text, and friends' status messages show them too.
+- 🖼️ **Photos, videos and files**: drag and drop, paste a picture, send a screenshot, and browse a chat's photos and videos in the viewer.
+- 👥 **Friends** in the same sections as on your phone (favorites, groups, friends, official accounts), with profile and group cards.
+- 🐧 **At home on the desktop**: notifications, the dock badge, dark mode, the app menu, LINE PC's keyboard shortcuts, and one-click updates.
 
-| | |
-| --- | --- |
-| **登入** | QR Code 掃描登入（自動產生）、電子郵件與密碼登入、手機 PIN 驗證、自動登入（存在系統鑰匙圈） |
-| **聊天** | 私訊與群組、未讀數、置頂、靜音、搜尋聊天與訊息、草稿保存 |
-| **訊息** | 文字、回覆、收回、已讀狀態、複製、轉傳、對話內搜尋 |
-| **貼圖與表情貼** | 你在手機上擁有的所有貼圖與 **LINE 表情貼**、最近使用、搜尋貼圖包；表情貼可以和文字混在同一則訊息 |
-| **照片、影片與檔案** | 收發照片與檔案、播放收到的影片、拖放、直接貼上剪貼簿圖片、螢幕截圖後傳送、照片檢視器（在聊天的照片與影片間上一張／下一張） |
-| **好友** | 我的最愛、群組、好友、官方帳號分區，與手機上的清單一致；個人檔案卡 |
-| **桌面整合** | 系統通知、深色模式（跟隨系統或手動切換）、應用程式選單與 dock 圖示（開著時顯示未讀數）、LINE PC 版快捷鍵、有新版本時一鍵更新 |
-| **本機小工具** | 聊天室記事、Keep 筆記（只存在這台電腦） |
-
-## 截圖
+## Screenshots
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/login-light.png" alt="登入畫面"><br><sub>登入：QR Code 或電子郵件</sub></td>
-    <td width="50%"><img src="docs/images/details-light.png" alt="聊天室資訊"><br><sub>聊天室資訊：記事、相簿、檔案、成員</sub></td>
+    <td width="50%"><img src="docs/images/viewer.webp" alt="The photo viewer showing a mountain trail photo from the chat"><br><sub>Photo viewer: browse a chat's photos and videos</sub></td>
+    <td width="50%"><img src="docs/images/friends.webp" alt="The friends list with a friend's profile card open"><br><sub>Friends, groups and profile cards</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/images/sticker-light.png" alt="貼圖面板"><br><sub>貼圖面板：點一下就送出</sub></td>
-    <td><img src="docs/images/emoji-light.png" alt="表情貼面板"><br><sub>表情貼：基本表情與你擁有的 LINE 表情貼</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/chat-dark.png" alt="深色模式"><br><sub>深色模式</sub></td>
-    <td><img src="docs/images/friends-light.png" alt="好友列表"><br><sub>好友列表</sub></td>
+    <td><img src="docs/images/details.webp" alt="A family group chat with a cat photo and the chat info panel"><br><sub>Chat info: notes, photos, files and members</sub></td>
+    <td><img src="docs/images/chat-dark.webp" alt="The same group chat in dark mode"><br><sub>Dark mode, following your system</sub></td>
   </tr>
 </table>
 
-<sub>截圖為內建的「離線展示」模式，人物與對話都是虛構的。</sub>
+<sub>The screenshots use made-up people and conversations; the photos are stock photos from Unsplash (see <a href="scripts/screenshots/photos.json">credits</a>).</sub>
 
-## 安裝
+## Install
 
-### 系統需求
-
-- **Ubuntu 24.04 以上**或 **Debian 12 以上**（含 Linux Mint、Pop!_OS、Zorin 等衍生版）
-- x86_64（一般 Intel／AMD 電腦）或 ARM64
-- 需要系統鑰匙圈（GNOME 預設就有）才能自動登入；沒有也能用，只是每次都要重新登入。
-
-### 方法一：下載安裝包（推薦）
-
-一般 Intel／AMD 電腦：
+On a typical Intel or AMD computer:
 
 ```bash
 curl -LO https://github.com/Elliot9/line-desktop/releases/latest/download/line-desktop-linux-amd64.tar.gz
 tar -xzf line-desktop-linux-amd64.tar.gz
 cd line-desktop
-./line-app --install-menu   # 加入應用程式選單，之後可從選單開啟
-./line-app                  # 啟動
+./line-app --install-menu   # add LINE to your app menu
+./line-app                  # start
 ```
 
-ARM 電腦（例如 Raspberry Pi 5、ARM 筆電）把上面的 `amd64` 換成 `arm64`。
+On ARM (a Raspberry Pi 5, an ARM laptop), use `arm64` instead of `amd64`.
 
-- 第一次啟動會自動安裝缺少的系統套件（GTK 4、PyGObject、字型、鑰匙圈工具），**可能會要求輸入 `sudo` 密碼**。
-- 安裝包已內含編譯好的通訊核心，不需要安裝 Go。
-- 請保留整個 `line-desktop` 資料夾。如果之後搬移資料夾，重新執行一次 `./line-app --install-menu`。
+Works on **Ubuntu 24.04+ and Debian 12+** and their derivatives (Linux Mint, Pop!_OS, Zorin, …), on x86_64 and ARM64.
 
-### 方法二：從原始碼執行
+> [!TIP]
+> The first start installs any missing system packages (GTK 4, PyGObject, fonts, the keyring tools) and may ask for your `sudo` password. Keep the whole `line-desktop` folder.
 
-```bash
-git clone https://github.com/Elliot9/line-desktop.git
-cd line-desktop
-./line-app
-```
+Running from source, other distributions, updating and uninstalling are covered in the [guide](docs/GUIDE.md#install).
 
-從原始碼執行時，第一次啟動會額外下載經 SHA256 驗證的 Go 工具鏈並編譯核心，需要幾分鐘與約 3 GB 可用記憶體。之後啟動會使用快取。
+## Get started
 
-### 其他發行版
+1. Start LINE. A QR code appears on the right.
+2. On your phone, open LINE's QR scanner (next to the search bar on the home tab) and scan it. If a PIN appears, enter it on the phone.
+3. That's it. Leave **自動登入** (sign in automatically) ticked to skip this next time.
 
-自動安裝只支援 apt。Fedora、Arch 等請先自行安裝對應套件再執行 `./line-app`：Python 3、PyGObject、GTK 4、librsvg、libsecret（`secret-tool`）、gnome-keyring、curl、Noto CJK 與 Noto Color Emoji 字型；要在程式裡播放影片，另需 GTK 4 的 GStreamer 媒體後端，以及 GStreamer 的 good 與 libav 外掛（MP4、H.264、AAC）。完整清單見 [setup-debian.sh](scripts/setup-debian.sh)。
+You can also sign in with your LINE email and password. Want a look first? `./line-app --demo` opens an offline demo that needs no account.
 
-### 更新與移除
+## Not supported yet
 
-- **更新**：有新版本時，開啟 LINE 會顯示目前版本和最新版本，以及這次改了什麼。
-  - 按「立即更新」會自動下載、驗證並重新開啟 LINE，登入狀態與設定都會保留。
-  - 按「暫不更新」就照常使用目前的版本。
-  - 也可以在「設定 → 版本」按「檢查更新」，或關閉「開啟 LINE 時檢查有沒有新版本」。
-  - 1.0.2 以前的版本還沒有這個功能，請手動下載新版安裝包，解壓縮覆蓋原本的資料夾一次。
-  - 從原始碼執行的資料夾請用 `git pull` 更新。
-  - 每個版本改了什麼，見 [更新紀錄](CHANGELOG.md)。
-- **移除**：刪除 `line-desktop` 資料夾、`~/.local/share/matrix-line`（本機資料），以及 `~/.local/share/applications/org.matrixline.Desktop.*.desktop`。
+- Voice and video calls ([research notes](docs/BACKLOG.md))
+- Adding friends, creating groups, OpenChat
+- Editing messages, sending videos, playing voice messages
+- History older than 14 days: LINE only gives desktop clients the last 14 days; older messages stay on your phone
 
-## 開始使用
+More detail, including official accounts and very large groups (which LINE does not encrypt), is in [docs/STATUS.md](docs/STATUS.md).
 
-1. 開啟後，畫面右邊會出現 QR Code。
-2. 在手機 LINE 開啟 QR Code 掃描器（主頁搜尋列旁的掃描圖示），掃描畫面上的 QR Code。
-3. 如果出現 PIN 碼，在手機上輸入同樣的數字。
-4. 完成！勾選「自動登入」，下次開啟就會直接進入。
+## Privacy
 
-也可以在左邊輸入 LINE 帳號的電子郵件與密碼登入。
+**LINE for Linux connects to LINE's servers directly. Nothing goes through a third party, and nothing is collected.**
 
-關閉視窗後 LINE 會留在背景繼續接收訊息與通知，再從應用程式選單或 dock 開啟就會回到原畫面。要完全結束，在 dock 的 LINE 圖示上按右鍵選「結束 LINE」，或按 `Ctrl+Q`。
+- Your login is kept in the system keyring (Secret Service). Your password is never stored.
+- Local notes, Keep memos and settings stay in `~/.local/share/matrix-line`, readable only by you.
+- The only other request is a check on GitHub for a new version, which carries no account data and can be turned off.
 
-> **想先看看長怎樣？** 執行 `./line-app --demo` 開啟離線展示，不會連到 LINE，也不需要帳號。
+## FAQ
 
-### 快捷鍵
+**Can LINE ban my account for this?**
+It connects the same way as LINE's own Chrome extension. It is still unofficial, so weigh the risk yourself.
 
-| 按鍵 | 動作 |
-| --- | --- |
-| `Enter` | 傳送訊息（可在設定改成 `Alt+Enter` 傳送） |
-| `Ctrl+1`／`Ctrl+2`／`Ctrl+3` | 好友／聊天／加入好友 |
-| `Ctrl+Tab`／`Ctrl+Shift+Tab` | 下一個／上一個聊天 |
-| `Ctrl+F` | 在目前對話中搜尋 |
-| `Ctrl+Shift+F` | 搜尋聊天 |
-| `Ctrl+Shift+S` | 擷取螢幕畫面並傳送 |
-| `Ctrl+V` | 貼上圖片 |
-| `Ctrl+W` | 關閉目前對話 |
-| `Ctrl+R` | 重新整理 |
-| `Ctrl+Q` | 結束 LINE（關閉視窗只會隱藏） |
-| `←` `→` | 照片檢視器中切換上一張／下一張（`Esc` 關閉） |
-| `空白鍵` | 照片檢視器中暫停／繼續播放影片 |
+**Chinese shows as boxes, or emoji are missing?**
+Install `fonts-noto-cjk` and `fonts-noto-color-emoji`; `./line-app --setup` does it for you.
 
-## 目前的限制
+**I have to sign in every time.**
+The system keyring is probably not running or not unlocked. Outside GNOME, make sure `gnome-keyring` is installed and running.
 
-這是非官方用戶端，以下功能 LINE 的協定目前做不到，或還沒實作：
+More answers in the [guide](docs/GUIDE.md#faq).
 
-- 語音與視訊通話（調查記錄見 [待辦](docs/BACKLOG.md)）
-- 新增好友、建立群組、社群（OpenChat）
-- 編輯訊息、傳送影片、播放語音訊息
-- 只能看到最近 14 天內的聊天記錄：往上捲動可以載入更早的訊息，但 LINE 只提供電腦版最近 14 天的訊息，更早的只在手機上
-- 記事與 Keep 筆記只存在本機，不會同步到手機
+## Contributing
 
-另外：
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains the layout, the tests and how releases are made. When reporting a problem, include your distribution and the output of `./line-app --version`.
 
-- **官方帳號與超大群組沒有 Letter Sealing**：LINE 本身就不替它們加密，傳給它們的文字會以未加密方式送出，聊天頂端會顯示「🔓 此聊天未加密」；檔案則無法傳給這類聊天。一般好友與群組仍全程加密，加密失敗時不會改用明文。
-- **與 LINE Chrome 擴充功能共用登入名額**：登入這個程式可能讓 Chrome 擴充功能登出，反之亦然（[上游已知問題](https://github.com/beeper/line#known-issues)）。手機與官方 PC／Mac 版不受影響。
+## Credits
 
-各功能的詳細狀態見 [功能狀態](docs/STATUS.md)。
+- The LINE protocol and encryption come from [beeper/line](https://github.com/beeper/line) (MIT). See [THIRD_PARTY.md](THIRD_PARTY.md).
+- Released under the [MIT License](LICENSE).
 
-## 隱私與安全
-
-- 程式**直接連線到 LINE 的伺服器**，不經過任何第三方，也不收集任何資料。
-- 開啟時會向 GitHub 查詢有沒有新版本。這只是一般的下載請求，不帶任何帳號資料，可以在設定關閉。
-- 登入憑證存放在系統鑰匙圈（Secret Service）；取消「自動登入」時不會寫入。**密碼從不儲存。**
-- 本機資料（記事、Keep 筆記、偏好設定）存放在 `~/.local/share/matrix-line`，檔案權限為僅限本人讀寫。
-- 全部原始碼都在這裡，歡迎檢查。
-
-## 常見問題
-
-**這會被 LINE 封鎖帳號嗎？**
-程式使用與 LINE Chrome 擴充功能相同的連線方式。但這不是官方程式，請自行評估風險。
-
-**中文是方塊，或表情符號顯示不出來？**
-請安裝 `fonts-noto-cjk` 與 `fonts-noto-color-emoji`（`./line-app --setup` 會自動安裝）。
-
-**每次開啟都要重新登入？**
-系統鑰匙圈可能沒有啟動或沒有解鎖。GNOME 以外的桌面環境請確認已安裝並啟動 `gnome-keyring`，並勾選登入頁的「自動登入」。
-
-**支援 Wayland 嗎？**
-支援，Wayland 與 X11 都可以用。
-
-## 開發
-
-```
-line-app      啟動腳本：安裝相依套件、建置核心、啟動介面
-desktop/      GTK 4 介面（Python + PyGObject）
-core/         通訊核心（Go），負責 LINE 協定與加密
-scripts/      建置、打包、測試
-```
-
-介面與核心之間用 JSON 行協定溝通，細節見 [架構說明](docs/ARCHITECTURE.md)。
-
-```bash
-cd core && go test ./... && cd ..                            # 核心測試
-python3 scripts/check-core.py .build/line-core-linux-amd64   # 核心協定檢查
-python3 scripts/check-ui.py                                  # 介面的傳輸與聊天狀態檢查（不需要顯示器）
-scripts/gui-smoke.sh            # GUI 自動檢查（需要 xvfb xauth dbus-x11 imagemagick）
-scripts/package.sh amd64        # 打包到 dist/，附 SHA256
-```
-
-歡迎提出 Issue 與 Pull Request！回報問題時，請附上發行版版本與 `./line-app --version` 的輸出。
-
-### 發布新版
-
-先把 [CHANGELOG.md](CHANGELOG.md) 的「未發布」改成「1.0.3 · 日期」，那一段就是發布說明（之後有新改動時再新增「未發布」段落）：
-
-```bash
-echo 1.0.3 > VERSION
-scripts/package.sh amd64
-scripts/package.sh arm64
-awk '/^## 1\.0\.3 /{f=1; next} /^## /{f=0} f' CHANGELOG.md > release-notes.md
-gh release create v1.0.3 dist/line-desktop-linux-*.tar.gz* --title "LINE for Linux 1.0.3" --notes-file release-notes.md
-```
-
-已安裝的 LINE 下次開啟時就會詢問使用者要不要更新到這個版本。程式內的更新需要：
-
-- 標籤是 `v` 加上與 `VERSION` 相同的版本號（例如 `v1.0.3`）。
-- 安裝包檔名維持 `line-desktop-linux-amd64.tar.gz` 與 `line-desktop-linux-arm64.tar.gz`。
-- 不要標成 pre-release。標成 pre-release 的版本使用者不會收到，可以用來先自己測試。
-
-發布說明中「安裝」段落之前的內容，會顯示在更新對話框裡。
-
-## 致謝與聲明
-
-- LINE 通訊協定與加密使用 [beeper/line](https://github.com/beeper/line)（MIT 授權），詳見 [第三方聲明](THIRD_PARTY.md)。
-- 介面中的插畫、人物與小熊貼圖為本專案原創。
-- 本專案以 [MIT 授權](LICENSE) 釋出。
-
-**本專案是非官方的第三方用戶端，與 LY Corporation（LINE）沒有任何關係，也未獲其認可。** LINE 是 LY Corporation 的商標。
+**This is an unofficial third-party client with no affiliation with, or endorsement by, LY Corporation (LINE).** LINE is a trademark of LY Corporation.
