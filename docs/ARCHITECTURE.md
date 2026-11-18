@@ -44,9 +44,19 @@ flowchart LR
 
 通知經由 `org.freedesktop.Notifications` 送出（`desktop/__main__.py` 設定 `GNOTIFICATION_BACKEND`），而非 GNOME 上 GLib 預設的 `org.gtk.Notifications`：GNOME 會保存後者並在每次登入桌面時還原，dock 圖示因此在 LINE 開啟前就顯示數字。freedesktop 通知在 LINE 結束時由 GNOME 移除。介面記錄目前顯示中的通知，聊天的未讀歸零（在這台電腦或手機上讀過、標為已讀、靜音）就收回；舊版留下的 `org.gtk.Notifications` 通知在第一次載入聊天清單時收回一次。
 
+dock 圖示上的未讀數以 Unity LauncherEntry 的 `Update` 訊號送出（`com.canonical.Unity.LauncherEntry`，Ubuntu Dock、Dash to Dock 與 KDE 都會讀取），數字與側邊欄「聊天」相同。Ubuntu Dock 收到這個數字後就顯示它，不再以通知數量當作數字；LINE 結束、離開 D-Bus 時 dock 自動移除。Ubuntu Dock 在解除螢幕鎖定時會重新啟動並遺失數字，所以介面在解鎖與視窗取得焦點時再送一次。
+
 右鍵選單掛在視窗的最上層，而不是聊天列或訊息泡泡底下，列的樣式不會套到選單，重繪列表也不會連帶關閉選單。選單從指標位置向右下展開。訊息文字可以選取，右鍵由泡泡先取得，因此出現的是 LINE 的選單而不是 GTK 的文字選單；選取部分文字時「複製」只複製選取的部分。
 
 `desktop/launcher.py` 產生應用程式選單的 `.desktop` 檔。dock 選單提供「結束 LINE」（`line-app --quit` 請執行中的實例結束），因為關閉視窗只會隱藏。程式啟動時，若已安裝的啟動器來自同一個資料夾且內容過時，會自動更新。
+
+`desktop/updater.py` 負責程式本身的更新，只用於從發布安裝包解開的資料夾（有 `.git` 的原始碼資料夾以 `git pull` 更新）。
+- **檢查**：LINE 開啟時，在背景向 GitHub 的 `releases/latest` 查詢一次（不在主執行緒，也不會延後登入）。背景執行的 LINE 在視窗再次開啟、且距離上次檢查超過一天時，會再查一次。草稿、預先發布（pre-release）與沒有這台電腦處理器安裝包的版本不會提供。
+- **詢問**：有較新的 `vX.Y.Z` 時顯示目前版本、最新版本，以及發布說明中「安裝」段落之前的內容，由使用者選擇「立即更新」或「暫不更新」。
+- **下載與驗證**：「立即更新」下載對應處理器的 `line-desktop-linux-<arch>.tar.gz`，SHA256 必須與 GitHub 公布的一致（優先用資產的 `digest`，沒有時用 `.sha256` 檔）。解壓前逐一檢查內容：只接受 `line-desktop/` 底下的一般檔案與資料夾，不接受 `..`、連結或裝置檔；解開後再確認 `VERSION` 與發布版本相同、通訊核心可執行。
+- **替換**：下載與解開都在程式資料夾的 `.build/update.*`，與程式在同一個檔案系統。安裝只是把安裝包中每個最上層項目以 rename 換進去；中途失敗時會換回原本的檔案。安裝包沒有的檔案（例如 `.build`、使用者自己放的檔案）不受影響。
+- **重新開啟**：介面結束後，`__main__` 以 `os.execv` 在同一個程序執行新版的 `line-app`。舊程序的 D-Bus 連線隨程序映像一起關閉，新版因此成為執行中的 LINE，而不是把啟動交給舊的實例。
+- **測試**：`LINE_APP_UPDATE_URL` 可指向測試用的發布資訊；`LINE_APP_NO_UPDATE_CHECK=1` 或設定中的開關可關閉啟動時檢查。
 
 `core/internal/attachments` 處理貼圖資料與檔案加密格式。檔案的 key material 放在加密訊息內，不放在一般 metadata 或 UI 資料中。接收檔案先驗證 HMAC，再寫入私人暫存檔，最後以不覆寫既有目的檔案的方式完成儲存。
 

@@ -3,7 +3,10 @@ import base64
 import collections
 import datetime
 import json
+import os
 from pathlib import Path
+import shutil
+import threading
 import time
 import uuid
 
@@ -17,6 +20,7 @@ from . import art
 from . import avatar as avatar_module
 from . import launcher
 from . import ui as ui_module
+from . import updater
 from .art import Art, BASIC_EMOJI, MOODS
 from .ipc import Core
 from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
@@ -38,12 +42,17 @@ RENDER_GAP = 0.08
 LIST_PAGE = 60
 # Messages built at once for the open conversation; earlier ones on request.
 HISTORY_PAGE = 150
+# LINE left running in the background asks GitHub again for a newer version,
+# when its window is opened, at most this often (seconds).
+UPDATE_RECHECK = 24 * 3600
 # Notifications allowed per NOTIFY_WINDOW seconds; beyond that, one summary.
 NOTIFY_BURST = 4
 NOTIFY_WINDOW = 5.0
 CENTER = Gtk.Align.CENTER
 START = Gtk.Align.START
 END = Gtk.Align.END
+# The pictures of the demo's photo collage.
+DEMO_SCENES = ("mountain", "trail", "coffee")
 DEMO_NOTE = {"title": "週六，我們去山裡呼吸 🌿", "author": "demo-yiting",
              "body": "集合時間｜11/7（六）09:30\n集合地點｜捷運劍潭站 1 號出口\n\n帶上水、薄外套和一點好心情。\n步道走完，再找間小店喝咖啡。\n下雨就改成城市散步！"}
 HELP_LINKS = (
@@ -137,6 +146,19 @@ class Application(Gtk.Application):
         self.restoring = False
         self.modal = None
         self.modal_kind = ""
+        self.lightbox = None
+        self.modal_close = None
+        # The update dialog's widgets and release while it is open.
+        self.update = None
+        self.update_checking = False
+        self.update_checked_at = 0.0
+        # Offered (and not taken) in this run: only a later version is
+        # offered again until LINE is opened anew.
+        self.update_offered = ""
+        # Set when an update is installed: LINE opens again after quitting.
+        self.restart_requested = False
+        # The unread count last sent to the dock.
+        self.dock_count = 0
         self.collapsed = {"official"}
         self.stick_bottom = True
         self.recent_stickers = [] if self.options.demo else list(self.prefs.settings["recent_stickers"])
@@ -190,6 +212,8 @@ class Application(Gtk.Application):
     def activate(self, *_):
         if self.window:
             self.window.present()
+            if time.monotonic() - self.update_checked_at > UPDATE_RECHECK:
+                self.check_for_update()
             return
         # Window/dock icon: the installed launcher icon is named after the
         # application id; the bundled SVG covers runs without --install-menu.
@@ -260,6 +284,10 @@ class Application(Gtk.Application):
         settings = Gtk.Settings.get_default()
         if settings is not None and settings.find_property("gtk-label-select-on-focus"):
             settings.set_property("gtk-label-select-on-focus", False)
+        bus = self.get_dbus_connection()
+        if bus is not None:
+            bus.signal_subscribe("org.gnome.ScreenSaver", "org.gnome.ScreenSaver", "ActiveChanged", "/org/gnome/ScreenSaver",
+                                 None, Gio.DBusSignalFlags.NONE, self.screen_lock_changed)
         self.pages.set_visible_child_name("login")
         self.show_restoring(not self.options.demo)
         self.window.present()
@@ -280,6 +308,7 @@ class Application(Gtk.Application):
                 launcher.refresh()
                 return GLib.SOURCE_REMOVE
             GLib.idle_add(refresh_launcher)
+            self.check_for_update()
 
     def open_chat_action(self, _action, value):
         chat_id = value.get_string()
@@ -835,7 +864,40 @@ class Application(Gtk.Application):
         unread = sum(int(chat.get("unread") or 0) for chat in self.state.chats.values() if not self.chat_muted(chat))
         self.navdot.set_text("99+" if unread > 99 else str(unread))
         self.navdot.set_visible(unread > 0)
+        self.show_dock_count(unread)
         self.withdraw_read_notifications()
+
+    def show_dock_count(self, count, again=False):
+        """While LINE runs, its dock icon shows the unread count, the same as
+        聊天 in the sidebar: the Unity LauncherEntry signal, which Ubuntu
+        Dock, Dash to Dock and KDE read. Ubuntu Dock then shows it instead of
+        the number of notifications. The dock drops the count when LINE
+        exits, as it forgets what a program sent once it leaves the bus."""
+        if count == self.dock_count and not again:
+            return
+        connection = self.get_dbus_connection()
+        if connection is None:
+            return
+        properties = {"count": GLib.Variant("x", count), "count-visible": GLib.Variant("b", count > 0)}
+        try:
+            connection.emit_signal(None, self.get_dbus_object_path() or "/", "com.canonical.Unity.LauncherEntry", "Update",
+                                   GLib.Variant("(sa{sv})", (f"application://{self.get_application_id()}.desktop", properties)))
+        except GLib.Error:
+            return
+        self.dock_count = count
+
+    def screen_lock_changed(self, _connection, _sender, _path, _interface, _signal, parameters):
+        """Ubuntu Dock starts afresh when the screen is unlocked and has
+        forgotten the count by then: send it again."""
+        if parameters.unpack()[0]:
+            return
+
+        def again():
+            if self.dock_count:
+                self.show_dock_count(self.dock_count, again=True)
+            return GLib.SOURCE_REMOVE
+        for delay in (1000, 4000):
+            GLib.timeout_add(delay, again)
 
     def withdraw_read_notifications(self):
         """A notification stays only while its chat is unread: read here,
@@ -1734,50 +1796,179 @@ class Application(Gtk.Application):
         else:
             self.core.request("images.fetch", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message.get("id"), "preview": preview}, fetched)
 
-    def open_viewer(self, message):
-        """LINE PC opens photos in their own window with save/copy."""
-        if str(message.get("url") or "") == "demo:collage":
-            self.open_lightbox(0)
-            return
-        viewer = Gtk.Window(title="照片", transient_for=self.window)
-        viewer.set_default_size(820, 640)
-        viewer.add_css_class("photo-viewer")
-        layout = box(V, 0)
-        stage = Gtk.Overlay()
-        stage.set_vexpand(True)
-        picture = Gtk.Picture()
-        picture.set_can_shrink(True)
-        stage.set_child(picture)
-        status = label("正在載入照片…", "viewer-status", xalign=0.5)
+    # ----------------------------------------------------------- photo viewer
+    # LINE PC shows a photo over the darkened window, with 上一張 and 下一張
+    # at its sides to go through every photo of the conversation.
+    def photo_slides(self, chat_id):
+        """The chat's photos, oldest first; the demo collage counts as its
+        three pictures."""
+        slides = []
+        for message in self.history_for(chat_id):
+            if message.get("kind") != "image" or message.get("unsent"):
+                continue
+            if str(message.get("url") or "") == "demo:collage":
+                slides += [{"message": message, "scene": name} for name in DEMO_SCENES]
+            else:
+                slides.append({"message": message})
+        return slides
+
+    def open_viewer(self, message, scene=0):
+        slides = self.photo_slides(str(message.get("chat_id") or self.state.selected))
+        index = next((i for i, slide in enumerate(slides) if slide["message"].get("id") == message.get("id")), None)
+        if index is None:
+            slides, index = [{"message": message}], 0
+        self.open_lightbox(slides, min(index + scene, len(slides) - 1))
+
+    def open_scene(self, chat, index):
+        collage = next((m for m in self.history_for(chat["id"]) if str(m.get("url")) == "demo:collage"), None)
+        if collage:
+            self.open_viewer(collage, index)
+
+    def open_lightbox(self, slides, index):
+        self.close_modal()
+        layer = Gtk.Overlay(hexpand=True, vexpand=True)
+        layer.add_css_class("lightbox")
+        column = box(V, 0)
+        top = box(H, 14, "lightbox-bar")
+        caption = label("", "lightbox-caption", ellipsize=True)
+        caption.set_hexpand(True)
+        caption.set_valign(CENTER)
+        counter = label("", "lightbox-counter")
+        counter.set_valign(CENTER)
+        top.append(caption)
+        top.append(counter)
+        top.append(icon_button("x", self.close_modal, "關閉", 22, "lightbox-close"))
+        stage = Gtk.Overlay(vexpand=True)
+        status = label("", "lightbox-status", xalign=0.5)
         status.set_halign(CENTER)
         status.set_valign(CENTER)
         status.set_can_target(False)
         stage.add_overlay(status)
-        layout.append(stage)
-        bar = box(H, 6, "viewer-bar", halign=CENTER)
-        # These handlers reach the window through the widget that fired, not
-        # through a captured variable: a window whose own handlers refer to
-        # it is never freed, and each one holds a full-size picture.
-        save = button(icon_text("download", "儲存", 15), None, "viewer-btn")
-        save.connect("clicked", lambda source: self.save_image(message, source.get_root()))
-        share = button(icon_text("forward", "分享", 15), None, "viewer-btn")
-        share.connect("clicked", lambda source: (source.get_root().close(), self.open_forward(message)))
-        bar.append(save)
-        bar.append(button(icon_text("copy", "複製", 15), lambda: self.copy_image(message), "viewer-btn"))
-        bar.append(share)
-        layout.append(bar)
-        viewer.set_child(layout)
-        key = Gtk.EventControllerKey()
-        key.connect("key-pressed", lambda controller, keyval, *_: (controller.get_widget().close(), True)[1] if keyval == Gdk.KEY_Escape else False)
-        viewer.add_controller(key)
+        actions = box(H, 6, "lightbox-bar", halign=CENTER)
+        for name, text, action in (("download", "儲存", "save"), ("copy", "複製", "copy"), ("forward", "分享", "share")):
+            actions.append(button(icon_text(name, text, 15), lambda action=action: self.lightbox_action(action), "lightbox-action"))
+        column.append(top)
+        column.append(stage)
+        column.append(actions)
+        layer.set_child(column)
+        previous = icon_button("back", lambda: self.lightbox_step(-1), "上一張", 26, "lightbox-nav")
+        following = icon_button("chevron", lambda: self.lightbox_step(1), "下一張", 26, "lightbox-nav")
+        for arrow, side in ((previous, START), (following, END)):
+            arrow.set_halign(side)
+            arrow.set_valign(CENTER)
+            layer.add_overlay(arrow)
+        click = Gtk.GestureClick()
+        click.connect("pressed", self.lightbox_pressed)
+        layer.add_controller(click)
+        self.overlay.add_overlay(layer)
+        self.pages.set_can_focus(False)
+        self.modal = layer
+        self.modal_kind = "lightbox"
+        # The state lives here rather than in the handlers above, so that no
+        # handler holds the widgets (and their full-size photos) once closed.
+        self.lightbox = {"slides": slides, "index": -1, "stage": stage, "picture": None, "status": status,
+                         "caption": caption, "counter": counter, "previous": previous, "next": following, "actions": actions}
+        self.show_slide(index)
+        GLib.idle_add(lambda: self.modal is layer and layer.child_focus(Gtk.DirectionType.TAB_FORWARD) and False)
+
+    def show_slide(self, index):
+        viewer = self.lightbox
+        if viewer is None or not 0 <= index < len(viewer["slides"]) or index == viewer["index"]:
+            return
+        viewer["index"] = index
+        slide = viewer["slides"][index]
+        message = slide["message"]
+        total = len(viewer["slides"])
+        viewer["counter"].set_text(f"{index + 1} / {total}")
+        viewer["counter"].set_visible(total > 1)
+        viewer["previous"].set_visible(index > 0)
+        viewer["next"].set_visible(index < total - 1)
+        viewer["caption"].set_text(self.photo_caption(message))
+        viewer["actions"].set_visible("scene" not in slide)
+        # A new picture for every photo: a photo still loading for the one
+        # shown before then lands in a picture that is no longer shown.
+        picture = Gtk.Picture(can_shrink=True)
+        try:
+            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        except AttributeError:
+            pass
+        picture.set_margin_start(88)
+        picture.set_margin_end(88)
+        viewer["picture"] = picture
+        viewer["stage"].set_child(picture)
+        status = viewer["status"]
+        if "scene" in slide:
+            picture.set_paintable(art.texture("scene", slide["scene"], 1096, 800, None))
+            status.set_visible(False)
+            return
         # The small picture from the chat is shown at once and replaced by
         # the full one when it arrives.
         small = self.photos.texture(message.get("id"), True)
         if small is not None:
             picture.set_paintable(small)
-        self.load_image(message, picture, preview=False, done=lambda texture: status.set_visible(False),
-                        failed=lambda: status.set_text("無法載入照片，可能已過期。"))
-        viewer.present()
+        status.set_text("正在載入照片…")
+        status.set_visible(True)
+
+        def done(_texture):
+            if self.lightbox is viewer and viewer["picture"] is picture:
+                status.set_visible(False)
+                self.prefetch_slides(viewer)
+
+        def failed():
+            if self.lightbox is viewer and viewer["picture"] is picture:
+                status.set_text("無法載入照片，可能已過期。")
+                status.set_visible(True)
+        self.load_image(message, picture, preview=False, done=done, failed=failed)
+
+    def prefetch_slides(self, viewer):
+        """Fetches the photos on either side, so stepping to them is instant."""
+        for near in (viewer["index"] + 1, viewer["index"] - 1):
+            if 0 <= near < len(viewer["slides"]) and "scene" not in viewer["slides"][near]:
+                message = viewer["slides"][near]["message"]
+                if self.photos.texture(message.get("id"), False) is None:
+                    self.load_image(message, Gtk.Picture(), preview=False)
+
+    def lightbox_step(self, delta):
+        if self.lightbox is not None:
+            self.show_slide(self.lightbox["index"] + delta)
+
+    def lightbox_action(self, action):
+        if self.lightbox is None:
+            return
+        message = self.lightbox["slides"][self.lightbox["index"]]["message"]
+        if action == "save":
+            self.save_image(message)
+        elif action == "copy":
+            self.copy_image(message)
+        else:
+            self.close_modal()
+            self.open_forward(message)
+
+    def lightbox_pressed(self, gesture, _presses, x, y):
+        """A click on the dark backdrop closes the viewer; one on the photo,
+        a button or the caption does not."""
+        layer = gesture.get_widget()
+        picked = layer.pick(x, y, Gtk.PickFlags.DEFAULT)
+        widget = picked
+        while widget is not None and widget is not layer:
+            if isinstance(widget, (Gtk.Button, Gtk.Label)):
+                return
+            widget = widget.get_parent()
+        picture = self.lightbox["picture"] if self.lightbox else None
+        if picture is not None and picked is picture:
+            found, point = layer.compute_point(picture, Graphene.Point().init(x, y))
+            if found and on_photo(picture, point.x, point.y):
+                return
+        self.close_modal()
+
+    def photo_caption(self, message):
+        if message.get("mine"):
+            sender = self.state.profile.get("name") or "你"
+        else:
+            sender = message.get("sender_name") or self.state.name_of(message.get("sender_id"))
+        stamp = int(message.get("time") or 0)
+        when = time.strftime("%Y/%m/%d %H:%M", time.localtime(stamp / 1000)) if stamp else ""
+        return " · ".join(part for part in (str(sender or ""), when) if part)
 
     def image_data(self, message):
         """The full picture's bytes as LINE delivered them, if at hand."""
@@ -2269,7 +2460,7 @@ class Application(Gtk.Application):
             cell = max(48, (getattr(self, "detail_width", 238) - 36 - 8) // 3)
             for index, name in enumerate(scenes[:3]):
                 tile = Art("scene", name, cell, cell, "media-cell")
-                frame = button(tile, lambda value=index: self.open_lightbox(value), None, "查看照片")
+                frame = button(tile, lambda value=index: self.open_scene(chat, value), None, "查看照片")
                 grid.append(frame)
             content.append(grid)
         else:
@@ -2290,7 +2481,7 @@ class Application(Gtk.Application):
 
     def chat_scenes(self, chat):
         if any(str(m.get("url")) == "demo:collage" for m in self.history_for(chat["id"])):
-            return ["mountain", "trail", "coffee"]
+            return list(DEMO_SCENES)
         return []
 
     def detail_notes(self, content, chat):
@@ -2314,7 +2505,7 @@ class Application(Gtk.Application):
         content.append(self.section_label("收藏一起走過的風景"))
         scenes = self.chat_scenes(chat)
         if scenes:
-            card = button(None, lambda: self.open_lightbox(0), None, "查看照片")
+            card = button(None, lambda: self.open_scene(chat, 0), None, "查看照片")
             frame = box(V, 0, "note-card")
             frame.set_overflow(Gtk.Overflow.HIDDEN)
             frame.append(Art("scene", scenes[0], getattr(self, "detail_width", 238) - 38, 100))
@@ -2351,6 +2542,8 @@ class Application(Gtk.Application):
 
     # ----------------------------------------------------------------- modals
     def open_modal(self, kind, title, body, actions=None, wide=False, css=""):
+        if self.modal_kind == "updating":
+            return None  # the update is installing; its dialog stays
         self.close_modal()
         layer = box(V, 0, "modal-overlay", hexpand=True, vexpand=True)
         card = box(V, 0, "modal " + css, halign=CENTER, valign=CENTER, vexpand=True)
@@ -2362,7 +2555,8 @@ class Application(Gtk.Application):
         heading.set_hexpand(True)
         heading.set_valign(CENTER)
         head.append(heading)
-        head.append(icon_button("x", self.close_modal, "關閉", 18))
+        self.modal_close = icon_button("x", self.close_modal, "關閉", 18)
+        head.append(self.modal_close)
         content.append(head)
         content.append(body)
         if actions is not None:
@@ -2385,11 +2579,13 @@ class Application(Gtk.Application):
         return layer
 
     def close_modal(self):
-        if not self.modal:
+        if not self.modal or self.modal_kind == "updating":
             return
         self.overlay.remove_overlay(self.modal)
         self.modal = None
         self.modal_kind = ""
+        self.lightbox = None
+        self.update = None
         self.pages.set_can_focus(True)
 
     def modal_actions(self, primary=None, primary_text="確定", secondary_text="取消", error=False, center=False):
@@ -2458,7 +2654,7 @@ class Application(Gtk.Application):
                 self.take_screenshot()
                 return True
         if self.modal_kind == "lightbox" and keyval in (Gdk.KEY_Left, Gdk.KEY_Right):
-            self.open_lightbox(self.lightbox_index + (1 if keyval == Gdk.KEY_Right else -1))
+            self.lightbox_step(1 if keyval == Gdk.KEY_Right else -1)
             return True
         return False
 
@@ -2561,7 +2757,8 @@ class Application(Gtk.Application):
         name.set_can_focus(False)
         body.append(self.field("顯示名稱", name))
         switches = {}
-        for key, title in (("notifications", "訊息通知"), ("enter_send", "按 Enter 傳送訊息（關閉時改按 Alt+Enter）")):
+        for key, title in (("notifications", "訊息通知"), ("enter_send", "按 Enter 傳送訊息（關閉時改按 Alt+Enter）"),
+                           ("check_updates", "開啟 LINE 時檢查有沒有新版本")):
             row = box(H, 0, "toggle-line")
             text = label(title)
             text.set_hexpand(True)
@@ -2583,7 +2780,7 @@ class Application(Gtk.Application):
         body.append(self.field("螢幕顯示模式", theme_choice))
         self.theme_choice = theme_choice
         body.append(label("顯示名稱由 LINE 帳號提供。設定保存在這台電腦；訊息通知使用桌面系統通知。", "subtle", wrap=True))
-        account = box(V, 0, "help-block last")
+        account = box(V, 0, "help-block")
         account.set_margin_top(8)
         account.append(label("帳號與連線", "help-title"))
         if self.state.mode == "demo":
@@ -2608,13 +2805,14 @@ class Application(Gtk.Application):
         controls.append(self.logout_button)
         account.append(controls)
         body.append(account)
+        body.append(self.version_block())
 
         def save():
             try:
                 font = sizes[size_choice.get_selected()][0]
                 self.window.remove_css_class(f"font-{self.prefs.settings['font_size']}")
                 self.prefs.save_settings(notifications=switches["notifications"].get_active(), enter_send=switches["enter_send"].get_active(), font_size=font,
-                                         theme=themes[theme_choice.get_selected()][0])
+                                         theme=themes[theme_choice.get_selected()][0], check_updates=switches["check_updates"].get_active())
                 self.window.add_css_class(f"font-{font}")
                 self.apply_theme()
             except OSError:
@@ -2625,6 +2823,230 @@ class Application(Gtk.Application):
             self.toast("設定已儲存")
         self.settings_save = save
         self.open_modal("settings", "設定", body, self.modal_actions(save, "儲存設定", "關閉"))
+
+    # ---------------------------------------------------------------- updates
+    def version_block(self):
+        """設定's 版本 section: the version of this folder and 檢查更新."""
+        block = box(V, 0, "help-block last")
+        block.append(label("版本", "help-title"))
+        kind = updater.install_kind()
+        how = {"source": "從原始碼執行，請在程式資料夾執行 git pull 更新。",
+               "readonly": "程式所在的資料夾無法寫入，新版需要手動下載安裝。",
+               "unsupported": "這台電腦的處理器沒有對應的安裝包，請從原始碼更新。"}.get(kind, "")
+        block.append(label(f"LINE for Linux {updater.current_version() or '（版本不明）'}" + (" · " + how if how else ""), "help-text", wrap=True))
+        self.update_button = None
+        if not self.options.demo:
+            row = box(H, 9)
+            row.set_margin_top(10)
+            self.update_button = button(None, lambda: self.check_for_update(manual=True), "secondary", text="檢查更新")
+            self.update_button.set_sensitive(not self.update_checking)
+            row.append(self.update_button)
+            block.append(row)
+        return block
+
+    def check_for_update(self, manual=False):
+        """Asks GitHub for a newer release off the main loop. When LINE opens
+        it speaks up only about a newer version; 檢查更新 in 設定 also says
+        when this version is current or GitHub cannot be reached."""
+        if self.update_checking or self.modal_kind == "updating":
+            return
+        if not manual and (self.options.demo or self.options.smoke_test or not self.prefs.settings["check_updates"]
+                           or os.environ.get("LINE_APP_NO_UPDATE_CHECK") or updater.install_kind() != "release"):
+            return
+        self.update_checking = True
+        self.update_checked_at = time.monotonic()
+        if getattr(self, "update_button", None) is not None:
+            self.update_button.set_sensitive(False)
+
+        def work():
+            try:
+                result = updater.check()
+            except Exception as error:  # offline, GitHub unreachable or an odd reply
+                result = error
+            self.dispatch(self.update_checked, result, manual)
+        threading.Thread(target=work, daemon=True, name="line-update-check").start()
+
+    def update_checked(self, result, manual):
+        self.update_checking = False
+        if getattr(self, "update_button", None) is not None:
+            self.update_button.set_sensitive(True)
+        if isinstance(result, Exception):
+            if manual:
+                self.toast("無法檢查更新。請確認網路連線後再試一次。", True)
+            return
+        if result is None:
+            if manual:
+                self.toast(f"已經是最新版本（{updater.current_version()}）。")
+            return
+        if manual or result.version != self.update_offered:
+            self.offer_update(result, manual)
+
+    def offer_update(self, release, manual=False):
+        """有新版本: both versions and what changed. 立即更新 installs it and
+        opens LINE again; 暫不更新 leaves LINE as it is."""
+        if self.modal_kind == "updating":
+            return
+        if self.modal and not manual:
+            # A dialog the person opened stays; ask once it is closed.
+            def later():
+                if not self.window or self.update_offered == release.version:
+                    return GLib.SOURCE_REMOVE
+                if self.modal:
+                    return GLib.SOURCE_CONTINUE
+                self.offer_update(release)
+                return GLib.SOURCE_REMOVE
+            GLib.timeout_add(1000, later)
+            return
+        self.update_offered = release.version
+        kind = updater.install_kind()
+        body = box(V, 0, "update-body")
+        versions = box(H, 26, "update-versions", halign=CENTER)
+        for title, value, css in (("目前版本", updater.current_version() or "—", ""), ("最新版本", release.version, " new")):
+            column = box(V, 4)
+            column.append(label(title, "update-version-title", xalign=0.5))
+            column.append(label(value, "update-version" + css, xalign=0.5))
+            versions.append(column)
+            if css == "":
+                arrow = label("→", "update-arrow", xalign=0.5)
+                arrow.set_valign(END)
+                versions.append(arrow)
+        body.append(versions)
+        markup = updater.notes_markup(release.notes)
+        if markup:
+            notes = label("", "update-notes", wrap=True)
+            notes.set_markup(markup)
+            body.append(notes)
+        size = f"約 {release.size / 1048576:.0f} MB" if release.size >= 1048576 else "新版"
+        hint = {"release": f"更新會下載{size}的安裝包，驗證後替換程式並重新開啟 LINE。登入狀態、聊天與設定都會保留。",
+                "source": "這個資料夾是從原始碼執行，請在程式資料夾執行 git pull 更新。",
+                "readonly": f"沒有權限寫入程式所在的資料夾（{updater.ROOT}），請到下載頁取得新版安裝包。"}.get(
+                    kind, "這台電腦的處理器沒有對應的安裝包，請從原始碼更新。")
+        body.append(label(hint, "update-hint", wrap=True))
+        status = label("", "update-status", wrap=True)
+        status.set_visible(False)
+        bar = Gtk.ProgressBar()
+        bar.add_css_class("update-progress")
+        bar.set_visible(False)
+        row = box(H, 9, "modal-actions", halign=END)
+        later = button(None, self.close_modal, "secondary", text="暫不更新" if kind == "release" else "關閉")
+        go = (button(None, self.start_update, "primary", text="立即更新") if kind == "release"
+              else button(None, lambda: self.open_uri(release.page), "primary", text="前往下載頁"))
+        stop = button(None, self.cancel_update, "secondary", text="取消更新")
+        stop.set_visible(False)
+        for item in (stop, later, go):
+            row.append(item)
+        actions = box(V, 0)
+        for item in (status, bar, row):
+            actions.append(item)
+        self.open_modal("update", "有新版本可以更新", body, actions)
+        self.update = {"release": release, "status": status, "bar": bar, "later": later, "go": go, "stop": stop, "cancel": None}
+
+    def update_status(self, text, error=False):
+        status = self.update["status"]
+        status.set_text(text)
+        status.set_visible(bool(text))
+        status.add_css_class("error") if error else status.remove_css_class("error")
+
+    def start_update(self):
+        dialog = self.update
+        if dialog is None or self.modal_kind != "update":
+            return
+        self.modal_kind = "updating"  # the dialog stays until it succeeds or fails
+        if self.modal_close is not None:
+            self.modal_close.set_visible(False)
+        dialog["later"].set_visible(False)
+        dialog["go"].set_visible(False)
+        dialog["stop"].set_visible(True)
+        dialog["stop"].set_sensitive(True)
+        dialog["bar"].set_fraction(0)
+        dialog["bar"].set_visible(True)
+        self.update_status("正在下載新版…")
+        cancel = threading.Event()
+        dialog["cancel"] = cancel
+        shown = [0.0]
+
+        def progress(received, total):
+            now = time.monotonic()
+            if now - shown[0] >= 0.1 or received >= total:
+                shown[0] = now
+                self.dispatch(self.update_progress, dialog, received, total)
+
+        def work():
+            try:
+                staging, tree = updater.prepare(dialog["release"], progress=progress, cancelled=cancel.is_set)
+            except updater.Cancelled:
+                self.dispatch(self.update_failed, dialog, "")
+            except updater.UpdateError as error:
+                self.dispatch(self.update_failed, dialog, str(error))
+            except Exception:  # network, disk space or a damaged archive
+                self.dispatch(self.update_failed, dialog, "下載或解開新版時發生問題。請確認網路連線與磁碟空間後再試一次。")
+            else:
+                self.dispatch(self.update_downloaded, dialog, staging, tree)
+        threading.Thread(target=work, daemon=True, name="line-update").start()
+
+    def update_progress(self, dialog, received, total):
+        if self.update is not dialog or dialog["cancel"].is_set():
+            return
+        megabytes = received / 1048576
+        if total:
+            dialog["bar"].set_fraction(min(1.0, received / total))
+            self.update_status(f"正在下載新版… {megabytes:.1f} / {total / 1048576:.1f} MB")
+        else:
+            dialog["bar"].pulse()
+            self.update_status(f"正在下載新版… {megabytes:.1f} MB")
+
+    def cancel_update(self):
+        dialog = self.update
+        if dialog is None or dialog["cancel"] is None:
+            return
+        dialog["cancel"].set()
+        dialog["stop"].set_sensitive(False)
+        self.update_status("正在取消…")
+
+    def update_failed(self, dialog, message):
+        if self.update is not dialog:
+            return
+        self.modal_kind = "update"
+        if not message:
+            self.close_modal()
+            self.toast("已取消更新，繼續使用目前的版本。")
+            return
+        if self.modal_close is not None:
+            self.modal_close.set_visible(True)
+        dialog["bar"].set_visible(False)
+        dialog["stop"].set_visible(False)
+        dialog["later"].set_visible(True)
+        dialog["go"].get_child().set_text("重新嘗試")
+        dialog["go"].set_visible(True)
+        self.update_status(message, True)
+
+    def update_downloaded(self, dialog, staging, tree):
+        if self.update is not dialog:
+            shutil.rmtree(staging, ignore_errors=True)
+            return
+        if dialog["cancel"].is_set():
+            shutil.rmtree(staging, ignore_errors=True)
+            self.update_failed(dialog, "")
+            return
+        dialog["stop"].set_visible(False)
+        try:
+            updater.install(tree)
+        except (updater.UpdateError, OSError) as error:
+            shutil.rmtree(staging, ignore_errors=True)
+            self.update_failed(dialog, str(error) if isinstance(error, updater.UpdateError) else "無法替換程式檔案，已保留原本的版本。")
+            return
+        shutil.rmtree(staging, ignore_errors=True)
+        dialog["bar"].set_fraction(1)
+        self.update_status(f"已更新到 {dialog['release'].version}，正在重新開啟 LINE…")
+        GLib.timeout_add(800, self.restart_for_update)
+
+    def restart_for_update(self):
+        """Quits; __main__ then starts the new version's line-app in this
+        process once LINE has let go of its name on the session bus."""
+        self.restart_requested = True
+        self.modal_kind = ""
+        self.quit()
+        return GLib.SOURCE_REMOVE
 
     def open_profile(self, person_id):
         """LINE profile card: cover, large round photo, name, status message
@@ -2910,24 +3332,6 @@ class Application(Gtk.Application):
             self.toast("記事已刪除")
         body = label(f"「{note['title']}」會從這台電腦移除。", "subtle", wrap=True)
         self.open_modal("note-delete", "刪除這則記事？", body, self.modal_actions(delete, "刪除記事"))
-
-    # --------------------------------------------------------------- lightbox
-    def open_lightbox(self, index):
-        scenes = self.chat_scenes(self.current_chat()) if self.current_chat() else []
-        if not scenes:
-            return
-        self.lightbox_index = index % len(scenes)
-        body = box(V, 0)
-        picture = Art("scene", scenes[self.lightbox_index], 548, 400, "r8")
-        picture.set_halign(CENTER)
-        body.append(picture)
-        controls = box(H, 25, halign=CENTER)
-        controls.set_margin_top(18)
-        controls.append(icon_button("back", lambda: self.open_lightbox(self.lightbox_index - 1), "上一張", 20))
-        controls.append(label(f"{self.lightbox_index + 1} / {len(scenes)}", "subtle"))
-        controls.append(icon_button("chevron", lambda: self.open_lightbox(self.lightbox_index + 1), "下一張", 20))
-        body.append(controls)
-        self.open_modal("lightbox", "聊天中的照片 · 離線展示", body, wide=True)
 
     # ------------------------------------------------------------- stickers
     def open_stickers(self):
@@ -3603,6 +4007,8 @@ class Application(Gtk.Application):
     def focus_changed(self, *_):
         if self.window and self.window.is_active():
             self.clear_summary()
+            if self.dock_count:
+                self.show_dock_count(self.dock_count, again=True)
         if self.reading():
             chat_id = self.state.selected
             if self.state.chats.get(chat_id, {}).get("unread"):
@@ -3646,7 +4052,10 @@ class Application(Gtk.Application):
             else:
                 dialog.close()
         self.dialogs.clear()
-        self.close_modal()
+        # 有新版本 is about the program, not the account: it stays when the
+        # core reports that nobody is logged in (as it does while LINE opens).
+        if self.modal_kind not in ("update", "updating"):
+            self.close_modal()
         if self.context_popover is not None:
             self.context_popover.popdown()
         self.sticker_popover.popdown()
@@ -3984,6 +4393,9 @@ class Application(Gtk.Application):
             return
         self.toast_label.set_text(text)
         self.toast_label.add_css_class("error") if error else self.toast_label.remove_css_class("error")
+        if self.toast_label.get_next_sibling() is not None:
+            # Above a dialog or the photo viewer opened after it.
+            self.toast_label.insert_before(self.overlay, None)
         self.toast_label.set_visible(True)
         if self.toast_timer:
             GLib.source_remove(self.toast_timer)
@@ -4164,6 +4576,9 @@ class Application(Gtk.Application):
                 self.check("file card shows the type, the name and the size",
                            card is not None and self.find_css(card, "kind-pdf") is not None
                            and {"散步路線提案.pdf", "檔案大小：2.4 KB"} <= set(self.labels_in(card)))
+                self.check_photo_viewer()
+                self.check_dock_count()
+                self.check_update_prompt()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
                 self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
@@ -4255,6 +4670,101 @@ class Application(Gtk.Application):
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
 
+    def check_photo_viewer(self):
+        photo = Path(self.options.smoke_test) / "photo.png"
+        art.texture("scene", "trail", 160, 120, None).save_to_png(str(photo))
+        history = self.state.messages.setdefault(self.smoke_chat, [])
+        now = int(time.time() * 1000)
+        added = [{"id": f"smoke-photo-{n}", "chat_id": self.smoke_chat, "sender_id": "demo-hao", "sender_name": "林子豪",
+                  "kind": "image", "url": "file://" + str(photo), "width": 160, "height": 120, "time": now + n, "status": "received"}
+                 for n in (1, 2)]
+        history += added
+        self.after_message(self.smoke_chat)
+        total = len(self.photo_slides(self.smoke_chat))
+        self.open_viewer(added[0])
+        viewer = self.lightbox
+        self.check("a photo opens over the window, at its place among the chat's photos",
+                   viewer is not None and self.modal_kind == "lightbox" and self.modal.get_parent() is self.overlay
+                   and viewer["counter"].get_text() == f"{total - 1} / {total}" and viewer["previous"].get_visible() and viewer["next"].get_visible()
+                   and viewer["caption"].get_text().startswith("林子豪 · "))
+        self.window_key(None, Gdk.KEY_Right, 0, Gdk.ModifierType(0))
+        self.lightbox_step(1)
+        self.check("下一張 goes to the next photo and stops at the last",
+                   viewer["index"] == total - 1 and viewer["counter"].get_text() == f"{total} / {total}"
+                   and not viewer["next"].get_visible() and viewer["previous"].get_visible())
+        loaded = self.wait_for(lambda: viewer["picture"].get_paintable() is not None and not viewer["status"].get_visible())
+        self.check("the full photo loads in the viewer", loaded)
+        layer = self.modal
+        self.wait_for(lambda: layer.get_width() > 0 and viewer["picture"].get_width() > 0)
+
+        class Press:
+            @staticmethod
+            def get_widget():
+                return layer
+        found, middle = viewer["picture"].compute_point(layer, Graphene.Point().init(viewer["picture"].get_width() / 2, viewer["picture"].get_height() / 2))
+        self.lightbox_pressed(Press, 1, middle.x, middle.y)
+        on_picture = self.modal is layer
+        self.lightbox_pressed(Press, 1, 4, layer.get_height() / 2)
+        self.check("a click on the photo keeps it open; one on the dark backdrop closes it",
+                   found and on_picture and self.modal is None and self.lightbox is None)
+        self.state.messages[self.smoke_chat] = [m for m in history if m not in added]
+        self.after_message(self.smoke_chat)
+
+    def check_dock_count(self):
+        bus = self.get_dbus_connection()
+        sent = []
+        subscription = bus.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None, Gio.DBusSignalFlags.NONE,
+                                            lambda *signal: sent.append(signal[5].unpack())) if bus else 0
+        self.state.chats["demo-family"]["unread"] = int(self.state.chats["demo-family"].get("unread") or 0) + 1
+        self.render_rail()
+        unread = sum(int(chat.get("unread") or 0) for chat in self.state.chats.values() if not self.chat_muted(chat))
+        self.wait_for(lambda: sent)
+        if bus:
+            bus.signal_unsubscribe(subscription)
+        self.check("the dock shows the unread count of 聊天",
+                   unread > 0 and sent and sent[-1][0] == f"application://{self.get_application_id()}.desktop"
+                   and sent[-1][1] == {"count": unread, "count-visible": True})
+        self.state.chats["demo-family"]["unread"] -= 1
+        self.render_rail()
+
+    def check_update_prompt(self):
+        current = updater.current_version()
+        self.open_settings()
+        self.check("設定 shows this version", f"LINE for Linux {current}" in " ".join(self.labels_in(self.modal)))
+        self.close_modal()
+        release = updater.Release(version="99.0.0", notes="# LINE for Linux 99.0.0\n\n## 改善\n\n- **更快**\n\n## 安裝／更新\n\n```\ncurl -LO x\n```",
+                                  page="https://example.invalid", url="https://example.invalid/a.tar.gz", size=7 * 1048576, sha256="", sha256_url="")
+        real_kind, real_prepare = updater.install_kind, updater.prepare
+        go = threading.Event()
+
+        def prepare(*_args, **_kwargs):
+            go.wait(5)
+            raise updater.UpdateError("測試：下載失敗。")
+        updater.install_kind = lambda root=None: "release"
+        updater.prepare = prepare
+        try:
+            self.offer_update(release, manual=True)
+            texts = self.labels_in(self.modal) if self.modal else []
+            self.check("有新版本 shows both versions and what changed, not how to install",
+                       self.modal_kind == "update" and current in texts and "99.0.0" in texts and "暫不更新" in texts and "立即更新" in texts
+                       and any("更快" in text for text in texts) and not any("curl" in text for text in texts))
+            self.update["go"].emit("clicked")
+            self.window_key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0))
+            self.close_modal()
+            self.check("the dialog stays while the update is downloading", self.modal_kind == "updating" and self.update is not None
+                       and self.update["bar"].get_visible() and self.update["stop"].get_visible() and not self.modal_close.get_visible())
+            go.set()
+            failed = self.wait_for(lambda: self.modal_kind == "update")
+            self.check("a failed update says why, offers 重新嘗試 and can be closed",
+                       failed and self.update["status"].get_text() == "測試：下載失敗。" and self.update["go"].get_child().get_text() == "重新嘗試"
+                       and self.modal_close.get_visible())
+            self.update["later"].emit("clicked")
+            self.check("暫不更新 goes back to LINE", self.modal is None and self.update is None and not self.restart_requested)
+        finally:
+            go.set()
+            updater.install_kind, updater.prepare = real_kind, real_prepare
+            self.close_modal()
+
     @staticmethod
     def wait_for(predicate, seconds=3):
         deadline = time.monotonic() + seconds
@@ -4324,6 +4834,18 @@ class Application(Gtk.Application):
     def run(self, argv):
         status = super().run(argv)
         return self.exit_status or status
+
+
+def on_photo(picture, x, y):
+    """Whether (x, y) in a Gtk.Picture that fits its photo (CONTAIN) falls
+    on the photo rather than on the empty bands beside it."""
+    paintable = picture.get_paintable()
+    width, height = picture.get_width(), picture.get_height()
+    if paintable is None or width <= 0 or height <= 0:
+        return False
+    ratio = paintable.get_intrinsic_aspect_ratio() or width / height
+    shown_width, shown_height = (height * ratio, height) if width / height > ratio else (width, width / ratio)
+    return abs(x - width / 2) <= shown_width / 2 and abs(y - height / 2) <= shown_height / 2
 
 
 def selected_text(widget):

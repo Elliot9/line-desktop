@@ -5,9 +5,11 @@ desktop/ipc.py is driven against a scripted stand-in for the core; the GTK
 main loop is replaced by a queue the test runs by hand, so ordering and
 backpressure can be observed. Run: python3 scripts/check-ui.py
 """
+import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import stat
 import sys
 import tempfile
@@ -240,6 +242,190 @@ def check_launcher():
     print("PASS an outdated launcher from this folder is refreshed; others are left alone")
 
 
+
+def release_archive(directory, version, extra=None, name="line-desktop-linux-%s.tar.gz"):
+    """A release archive like scripts/package.sh makes, with extra members
+    (name -> tarfile type) to try the checks on."""
+    import io
+    import tarfile
+    from desktop import updater
+    path = Path(directory) / (name % updater.architecture())
+    files = {"line-app": b"#!/bin/sh\necho new\n", "VERSION": version.encode() + b"\n", "desktop/__main__.py": b"# new\n",
+             "desktop/new.py": b"# added\n", f"bin/line-core-linux-{updater.architecture()}": b"\x7fELF new core"}
+    with tarfile.open(path, "w:gz") as tar:
+        for member, data in files.items():
+            info = tarfile.TarInfo("line-desktop/" + member)
+            info.size = len(data)
+            info.mode = 0o755 if member in ("line-app",) or member.startswith("bin/") else 0o644
+            tar.addfile(info, io.BytesIO(data))
+        for member, kind in (extra or {}).items():
+            info = tarfile.TarInfo(member)
+            info.type = kind
+            info.linkname = "/etc/passwd" if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE) else ""
+            data = b"x" if kind == tarfile.REGTYPE else b""
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return path
+
+
+def check_updater():
+    import hashlib
+    import http.server
+    import tarfile
+    import threading
+    from desktop import updater
+    assert updater.version_tuple("v1.0.10") > updater.version_tuple("1.0.9") > updater.version_tuple("1.0") == (1, 0, 0)
+    assert updater.version_tuple("v1.1.0-beta") is None and updater.version_tuple("") is None
+    markup = updater.notes_markup("# LINE for Linux 1.0.3\n\n## 改善\n\n- **更快**：<少等>一點 [說明](https://x)\n  - 細項\n\n"
+                                  "```\nrm -rf\n```\n\n## 安裝／更新\n\ncurl -LO https://example\n")
+    assert markup == "<b>改善</b>\n• <b>更快</b>：&lt;少等&gt;一點 說明\n\u2003◦ 細項", markup
+    print("PASS versions compare by number; release notes keep what changed, not how to install")
+
+    with tempfile.TemporaryDirectory() as directory:
+        directory = Path(directory)
+        served = directory / "served"
+        served.mkdir()
+        good = release_archive(directory, "1.0.3")
+        shutil.copy(good, served / good.name)
+        digest = hashlib.sha256(good.read_bytes()).hexdigest()
+        (served / (good.name + ".sha256")).write_text(f"{digest}  {good.name}\n")
+        release = {"tag_name": "v1.0.3", "html_url": "https://example.invalid/r", "body": "## 改善\n- 新功能", "assets": []}
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(served), **kwargs)
+
+            def log_message(self, *_):
+                pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}/"
+
+        def publish(**changes):
+            data = dict(release, **changes)
+            (served / "latest.json").write_text(json.dumps(data))
+        asset = {"name": good.name, "browser_download_url": base + good.name, "size": good.stat().st_size, "digest": "sha256:" + digest}
+        checksum = {"name": good.name + ".sha256", "browser_download_url": base + good.name + ".sha256"}
+
+        root = directory / "line-desktop"
+        (root / "desktop").mkdir(parents=True)
+        (root / "bin").mkdir()
+        (root / ".build").mkdir()
+        (root / "VERSION").write_text("1.0.2\n")
+        (root / "line-app").write_text("old\n")
+        (root / "desktop/__main__.py").write_text("# old\n")
+        (root / "desktop/old.py").write_text("# removed in 1.0.3\n")
+        (root / "mine.txt").write_text("the person's own file\n")
+        before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+        previous = os.environ.get("LINE_APP_UPDATE_URL")
+        os.environ["LINE_APP_UPDATE_URL"] = base + "latest.json"
+        try:
+            assert updater.install_kind(root) == "release"
+            publish(assets=[asset, checksum])
+            found = updater.check(root)
+            assert found and found.version == "1.0.3" and found.sha256 == digest and found.notes.startswith("## 改善")
+            publish(assets=[asset], prerelease=True)
+            assert updater.check(root) is None
+            publish(tag_name="v1.0.2", assets=[asset])
+            assert updater.check(root) is None
+            publish(assets=[dict(asset, name="line-desktop-linux-riscv.tar.gz")])
+            assert updater.check(root) is None
+            publish(assets=[dict(asset, digest=None), checksum])
+            assert updater.check(root).sha256 == ""
+            print("PASS a newer release for this processor is found; same, older and pre-releases are not offered")
+
+            seen = []
+            staging, tree = updater.prepare(updater.check(root), root, progress=lambda got, total: seen.append((got, total)))
+            assert seen and seen[-1][0] == seen[-1][1] == good.stat().st_size
+            updater.install(tree, root)
+            shutil.rmtree(staging)
+            after = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+            assert (root / "VERSION").read_text().strip() == "1.0.3" and (root / "line-app").read_text() == "#!/bin/sh\necho new\n"
+            assert os.access(root / "line-app", os.X_OK) and os.access(root / "bin" / f"line-core-linux-{updater.architecture()}", os.X_OK)
+            assert "desktop/old.py" not in after and "desktop/new.py" in after and (root / "mine.txt").read_bytes() == before["mine.txt"]
+            assert (root / ".build").is_dir() and not list((root / ".build").glob("update.*"))
+            print("PASS 立即更新 downloads (SHA256 from the .sha256 file), unpacks and replaces the program, keeping other files")
+
+            def restore():
+                for path in sorted(root.rglob("*"), reverse=True):
+                    if path.is_file():
+                        path.unlink()
+                    elif path.is_dir() and path.name != ".build":
+                        path.rmdir()
+                for name, data in before.items():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_bytes(data)
+
+            def unchanged():
+                now = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+                return now == before and not list((root / ".build").glob("update.*"))
+            restore()
+            for archive, message in ((release_archive(directory, "1.0.3", {"line-desktop/../escape": tarfile.REGTYPE}, "a1-%s.tar.gz"), "內容異常"),
+                                     (release_archive(directory, "1.0.3", {"line-desktop/link": tarfile.SYMTYPE}, "a2-%s.tar.gz"), "內容異常"),
+                                     (release_archive(directory, "1.0.3", {"elsewhere/file": tarfile.REGTYPE}, "a3-%s.tar.gz"), "內容異常"),
+                                     (release_archive(directory, "1.0.4", None, "a4-%s.tar.gz"), "版本與發布的版本不符")):
+                shutil.copy(archive, served / good.name)
+                fresh = hashlib.sha256(archive.read_bytes()).hexdigest()
+                publish(assets=[dict(asset, size=archive.stat().st_size, digest="sha256:" + fresh)])
+                try:
+                    updater.prepare(updater.check(root), root)
+                    raise AssertionError("installed " + archive.name)
+                except updater.UpdateError as error:
+                    assert message in str(error), error
+                assert unchanged()
+            shutil.copy(good, served / good.name)
+            publish(assets=[dict(asset, digest="sha256:" + "0" * 64)])
+            try:
+                updater.prepare(updater.check(root), root)
+                raise AssertionError("installed an archive whose SHA256 does not match")
+            except updater.UpdateError as error:
+                assert "SHA256" in str(error)
+            publish(assets=[dict(asset, digest=None)])
+            try:
+                updater.prepare(updater.check(root), root)
+                raise AssertionError("installed an archive without a published SHA256")
+            except updater.UpdateError as error:
+                assert "驗證碼" in str(error)
+            publish(assets=[asset])
+            try:
+                updater.prepare(updater.check(root), root, cancelled=lambda: True)
+                raise AssertionError("went on after 取消更新")
+            except updater.Cancelled:
+                pass
+            assert unchanged()
+            print("PASS archives with a wrong SHA256, version, path, link or none published are refused; 取消更新 stops; nothing changes")
+
+            staging, tree = updater.prepare(updater.check(root), root)
+            real_rename, calls = Path.rename, []
+
+            def failing_rename(self, target):
+                calls.append(self)
+                if len(calls) == 5:
+                    raise PermissionError(13, "Permission denied")
+                return real_rename(self, target)
+            Path.rename = failing_rename
+            try:
+                updater.install(tree, root)
+                raise AssertionError("install went on after a rename failed")
+            except updater.UpdateError as error:
+                assert "已保留原本的版本" in str(error)
+            finally:
+                Path.rename = real_rename
+            shutil.rmtree(staging)
+            assert unchanged()
+            print("PASS a failure part-way through installing puts the old version back")
+
+            (root / ".git").mkdir()
+            assert updater.install_kind(root) == "source"
+            print("PASS a git checkout is not updated in place")
+        finally:
+            server.shutdown()
+            if previous is None:
+                os.environ.pop("LINE_APP_UPDATE_URL", None)
+            else:
+                os.environ["LINE_APP_UPDATE_URL"] = previous
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         fake = Path(directory) / "fake-core"
@@ -248,3 +434,4 @@ if __name__ == "__main__":
         check_transport(str(fake))
     check_state()
     check_launcher()
+    check_updater()

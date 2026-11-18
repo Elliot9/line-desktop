@@ -207,7 +207,7 @@ class Preferences:
     """Per-account pinned, muted and favourite chats plus app-wide settings."""
 
     defaults = {"enter_send": True, "notifications": True, "font_size": 14, "theme": "system", "recent_stickers": [], "auto_login": True,
-                "old_notifications_cleared": False}
+                "old_notifications_cleared": False, "check_updates": True}
 
     def __init__(self):
         self.root = data_root() / "preferences"
