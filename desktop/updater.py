@@ -268,8 +268,11 @@ def notes_markup(text, limit=1200):
                 continue  # the release name; the dialog says the version
             line = "<b>" + inline(title) + "</b>"
         else:
-            bullet = re.match(r"\s*[-*]\s+(.*)", line)
-            line = "• " + inline(bullet.group(1)) if bullet else inline(line)
+            bullet = re.match(r"(\s*)[-*]\s+(.*)", line)
+            if bullet:  # items under an item are indented, as in the notes
+                line = ("\u2003◦ " if len(bullet.group(1)) >= 2 else "• ") + inline(bullet.group(2))
+            else:
+                line = inline(line)
         if not line and (not lines or not lines[-1] or lines[-1].startswith("<b>")):
             continue  # no blank line at the top, twice or under a heading
         if length + len(line) > limit:

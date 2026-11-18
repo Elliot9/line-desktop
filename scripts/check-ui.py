@@ -276,9 +276,9 @@ def check_updater():
     from desktop import updater
     assert updater.version_tuple("v1.0.10") > updater.version_tuple("1.0.9") > updater.version_tuple("1.0") == (1, 0, 0)
     assert updater.version_tuple("v1.1.0-beta") is None and updater.version_tuple("") is None
-    markup = updater.notes_markup("# LINE for Linux 1.0.3\n\n## 改善\n\n- **更快**：<少等>一點 [說明](https://x)\n\n"
+    markup = updater.notes_markup("# LINE for Linux 1.0.3\n\n## 改善\n\n- **更快**：<少等>一點 [說明](https://x)\n  - 細項\n\n"
                                   "```\nrm -rf\n```\n\n## 安裝／更新\n\ncurl -LO https://example\n")
-    assert markup == "<b>改善</b>\n• <b>更快</b>：&lt;少等&gt;一點 說明", markup
+    assert markup == "<b>改善</b>\n• <b>更快</b>：&lt;少等&gt;一點 說明\n\u2003◦ 細項", markup
     print("PASS versions compare by number; release notes keep what changed, not how to install")
 
     with tempfile.TemporaryDirectory() as directory:

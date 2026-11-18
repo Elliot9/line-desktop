@@ -108,6 +108,7 @@ cd line-desktop
   - 也可以在「設定 → 版本」按「檢查更新」，或關閉「開啟 LINE 時檢查有沒有新版本」。
   - 1.0.2 以前的版本還沒有這個功能，請手動下載新版安裝包，解壓縮覆蓋原本的資料夾一次。
   - 從原始碼執行的資料夾請用 `git pull` 更新。
+  - 每個版本改了什麼，見 [更新紀錄](CHANGELOG.md)。
 - **移除**：刪除 `line-desktop` 資料夾、`~/.local/share/matrix-line`（本機資料），以及 `~/.local/share/applications/org.matrixline.Desktop.*.desktop`。
 
 ## 開始使用
@@ -143,7 +144,7 @@ cd line-desktop
 
 這是非官方用戶端，以下功能 LINE 的協定目前做不到，或還沒實作：
 
-- 語音與視訊通話
+- 語音與視訊通話（調查記錄見 [待辦](docs/BACKLOG.md)）
 - 新增好友、建立群組、社群（OpenChat）
 - 編輯訊息、載入更早的聊天記錄（只會顯示近期訊息）
 - 記事與 Keep 筆記只存在本機，不會同步到手機
@@ -200,10 +201,13 @@ scripts/package.sh amd64        # 打包到 dist/，附 SHA256
 
 ### 發布新版
 
+先把 [CHANGELOG.md](CHANGELOG.md) 的「未發布」改成「1.0.3 · 日期」，再新增一個空的「未發布」段落。那一段就是發布說明：
+
 ```bash
 echo 1.0.3 > VERSION
 scripts/package.sh amd64
 scripts/package.sh arm64
+awk '/^## 1\.0\.3 /{f=1; next} /^## /{f=0} f' CHANGELOG.md > release-notes.md
 gh release create v1.0.3 dist/line-desktop-linux-*.tar.gz* --title "LINE for Linux 1.0.3" --notes-file release-notes.md
 ```
 
