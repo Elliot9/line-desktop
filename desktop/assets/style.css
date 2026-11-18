@@ -141,13 +141,24 @@
 .file-size { font-size: 11px; color: #999; margin-top: 1px; }
 .attachment button.icon-btn { color: #777; }
 .drag-overlay { margin: 10px; border: 2px dashed #06c755; border-radius: 12px; background: rgba(240, 255, 245, 0.93); color: #06a046; font-size: 17px; }
-.photo-viewer { background: #111; }
-.photo-viewer .viewer-status { color: #ddd; font-size: 13px; padding: 6px 14px; border-radius: 14px; background: rgba(0, 0, 0, 0.55); }
 .messages button.history-more { all: unset; font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.28); border-radius: 12px; padding: 4px 12px; margin: 6px 0 14px; }
 .messages button.history-more:hover { background: rgba(0, 0, 0, 0.42); }
-.viewer-bar { padding: 10px; background: #111; }
-.photo-viewer button.viewer-btn { all: unset; color: #eee; padding: 6px 12px; border-radius: 6px; }
-.photo-viewer button.viewer-btn:hover { background: #333; }
+
+
+/* Photo viewer · the photo over the darkened window, 上一張／下一張 at its sides (LINE PC) */
+@keyframes lightbox-in { from { opacity: 0; } to { opacity: 1; } }
+.lightbox { background: rgba(10, 10, 10, 0.9); color: #f2f2f2; animation: lightbox-in 140ms ease-out; }
+.lightbox .lightbox-bar { padding: 10px 16px; }
+.lightbox .lightbox-caption { font-size: 13px; color: #e8e8e8; }
+.lightbox .lightbox-counter { font-size: 13px; color: #b8b8b8; }
+.lightbox .lightbox-status { color: #ddd; font-size: 13px; padding: 6px 14px; border-radius: 14px; background: rgba(0, 0, 0, 0.6); }
+.line-window .lightbox button.lightbox-close { color: #f2f2f2; padding: 5px; border-radius: 18px; }
+.line-window .lightbox button.lightbox-close:hover { background: rgba(255, 255, 255, 0.14); }
+.line-window .lightbox button.lightbox-nav { min-width: 50px; min-height: 50px; margin: 0 20px; border-radius: 25px; color: #ffffff; background: rgba(255, 255, 255, 0.12); }
+.line-window .lightbox button.lightbox-nav:hover { background: rgba(255, 255, 255, 0.26); }
+.line-window .lightbox button.lightbox-action { color: #eeeeee; font-size: 13px; padding: 6px 12px; border-radius: 6px; }
+.line-window .lightbox button.lightbox-action:hover { background: rgba(255, 255, 255, 0.14); }
+.line-window .lightbox button:focus-visible { outline-color: rgba(255, 255, 255, 0.7); }
 
 /* Composer · text on top, toolbar along the bottom (LINE PC) */
 .composer { background: #fff; border-top: 1px solid #ececec; padding: 8px 12px 8px 16px; }

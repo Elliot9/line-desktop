@@ -44,6 +44,8 @@ flowchart LR
 
 通知經由 `org.freedesktop.Notifications` 送出（`desktop/__main__.py` 設定 `GNOTIFICATION_BACKEND`），而非 GNOME 上 GLib 預設的 `org.gtk.Notifications`：GNOME 會保存後者並在每次登入桌面時還原，dock 圖示因此在 LINE 開啟前就顯示數字。freedesktop 通知在 LINE 結束時由 GNOME 移除。介面記錄目前顯示中的通知，聊天的未讀歸零（在這台電腦或手機上讀過、標為已讀、靜音）就收回；舊版留下的 `org.gtk.Notifications` 通知在第一次載入聊天清單時收回一次。
 
+dock 圖示上的未讀數以 Unity LauncherEntry 的 `Update` 訊號送出（`com.canonical.Unity.LauncherEntry`，Ubuntu Dock、Dash to Dock 與 KDE 都會讀取），數字與側邊欄「聊天」相同。Ubuntu Dock 收到這個數字後就顯示它，不再以通知數量當作數字；LINE 結束、離開 D-Bus 時 dock 自動移除。Ubuntu Dock 在解除螢幕鎖定時會重新啟動並遺失數字，所以介面在解鎖與視窗取得焦點時再送一次。
+
 右鍵選單掛在視窗的最上層，而不是聊天列或訊息泡泡底下，列的樣式不會套到選單，重繪列表也不會連帶關閉選單。選單從指標位置向右下展開。訊息文字可以選取，右鍵由泡泡先取得，因此出現的是 LINE 的選單而不是 GTK 的文字選單；選取部分文字時「複製」只複製選取的部分。
 
 `desktop/launcher.py` 產生應用程式選單的 `.desktop` 檔。dock 選單提供「結束 LINE」（`line-app --quit` 請執行中的實例結束），因為關閉視窗只會隱藏。程式啟動時，若已安裝的啟動器來自同一個資料夾且內容過時，會自動更新。

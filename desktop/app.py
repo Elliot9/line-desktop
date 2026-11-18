@@ -44,6 +44,8 @@ NOTIFY_WINDOW = 5.0
 CENTER = Gtk.Align.CENTER
 START = Gtk.Align.START
 END = Gtk.Align.END
+# The pictures of the demo's photo collage.
+DEMO_SCENES = ("mountain", "trail", "coffee")
 DEMO_NOTE = {"title": "週六，我們去山裡呼吸 🌿", "author": "demo-yiting",
              "body": "集合時間｜11/7（六）09:30\n集合地點｜捷運劍潭站 1 號出口\n\n帶上水、薄外套和一點好心情。\n步道走完，再找間小店喝咖啡。\n下雨就改成城市散步！"}
 HELP_LINKS = (
@@ -137,6 +139,9 @@ class Application(Gtk.Application):
         self.restoring = False
         self.modal = None
         self.modal_kind = ""
+        self.lightbox = None
+        # The unread count last sent to the dock.
+        self.dock_count = 0
         self.collapsed = {"official"}
         self.stick_bottom = True
         self.recent_stickers = [] if self.options.demo else list(self.prefs.settings["recent_stickers"])
@@ -260,6 +265,10 @@ class Application(Gtk.Application):
         settings = Gtk.Settings.get_default()
         if settings is not None and settings.find_property("gtk-label-select-on-focus"):
             settings.set_property("gtk-label-select-on-focus", False)
+        bus = self.get_dbus_connection()
+        if bus is not None:
+            bus.signal_subscribe("org.gnome.ScreenSaver", "org.gnome.ScreenSaver", "ActiveChanged", "/org/gnome/ScreenSaver",
+                                 None, Gio.DBusSignalFlags.NONE, self.screen_lock_changed)
         self.pages.set_visible_child_name("login")
         self.show_restoring(not self.options.demo)
         self.window.present()
@@ -835,7 +844,40 @@ class Application(Gtk.Application):
         unread = sum(int(chat.get("unread") or 0) for chat in self.state.chats.values() if not self.chat_muted(chat))
         self.navdot.set_text("99+" if unread > 99 else str(unread))
         self.navdot.set_visible(unread > 0)
+        self.show_dock_count(unread)
         self.withdraw_read_notifications()
+
+    def show_dock_count(self, count, again=False):
+        """While LINE runs, its dock icon shows the unread count, the same as
+        聊天 in the sidebar: the Unity LauncherEntry signal, which Ubuntu
+        Dock, Dash to Dock and KDE read. Ubuntu Dock then shows it instead of
+        the number of notifications. The dock drops the count when LINE
+        exits, as it forgets what a program sent once it leaves the bus."""
+        if count == self.dock_count and not again:
+            return
+        connection = self.get_dbus_connection()
+        if connection is None:
+            return
+        properties = {"count": GLib.Variant("x", count), "count-visible": GLib.Variant("b", count > 0)}
+        try:
+            connection.emit_signal(None, self.get_dbus_object_path() or "/", "com.canonical.Unity.LauncherEntry", "Update",
+                                   GLib.Variant("(sa{sv})", (f"application://{self.get_application_id()}.desktop", properties)))
+        except GLib.Error:
+            return
+        self.dock_count = count
+
+    def screen_lock_changed(self, _connection, _sender, _path, _interface, _signal, parameters):
+        """Ubuntu Dock starts afresh when the screen is unlocked and has
+        forgotten the count by then: send it again."""
+        if parameters.unpack()[0]:
+            return
+
+        def again():
+            if self.dock_count:
+                self.show_dock_count(self.dock_count, again=True)
+            return GLib.SOURCE_REMOVE
+        for delay in (1000, 4000):
+            GLib.timeout_add(delay, again)
 
     def withdraw_read_notifications(self):
         """A notification stays only while its chat is unread: read here,
@@ -1734,50 +1776,179 @@ class Application(Gtk.Application):
         else:
             self.core.request("images.fetch", {"chat_id": message.get("chat_id") or self.state.selected, "message_id": message.get("id"), "preview": preview}, fetched)
 
-    def open_viewer(self, message):
-        """LINE PC opens photos in their own window with save/copy."""
-        if str(message.get("url") or "") == "demo:collage":
-            self.open_lightbox(0)
-            return
-        viewer = Gtk.Window(title="照片", transient_for=self.window)
-        viewer.set_default_size(820, 640)
-        viewer.add_css_class("photo-viewer")
-        layout = box(V, 0)
-        stage = Gtk.Overlay()
-        stage.set_vexpand(True)
-        picture = Gtk.Picture()
-        picture.set_can_shrink(True)
-        stage.set_child(picture)
-        status = label("正在載入照片…", "viewer-status", xalign=0.5)
+    # ----------------------------------------------------------- photo viewer
+    # LINE PC shows a photo over the darkened window, with 上一張 and 下一張
+    # at its sides to go through every photo of the conversation.
+    def photo_slides(self, chat_id):
+        """The chat's photos, oldest first; the demo collage counts as its
+        three pictures."""
+        slides = []
+        for message in self.history_for(chat_id):
+            if message.get("kind") != "image" or message.get("unsent"):
+                continue
+            if str(message.get("url") or "") == "demo:collage":
+                slides += [{"message": message, "scene": name} for name in DEMO_SCENES]
+            else:
+                slides.append({"message": message})
+        return slides
+
+    def open_viewer(self, message, scene=0):
+        slides = self.photo_slides(str(message.get("chat_id") or self.state.selected))
+        index = next((i for i, slide in enumerate(slides) if slide["message"].get("id") == message.get("id")), None)
+        if index is None:
+            slides, index = [{"message": message}], 0
+        self.open_lightbox(slides, min(index + scene, len(slides) - 1))
+
+    def open_scene(self, chat, index):
+        collage = next((m for m in self.history_for(chat["id"]) if str(m.get("url")) == "demo:collage"), None)
+        if collage:
+            self.open_viewer(collage, index)
+
+    def open_lightbox(self, slides, index):
+        self.close_modal()
+        layer = Gtk.Overlay(hexpand=True, vexpand=True)
+        layer.add_css_class("lightbox")
+        column = box(V, 0)
+        top = box(H, 14, "lightbox-bar")
+        caption = label("", "lightbox-caption", ellipsize=True)
+        caption.set_hexpand(True)
+        caption.set_valign(CENTER)
+        counter = label("", "lightbox-counter")
+        counter.set_valign(CENTER)
+        top.append(caption)
+        top.append(counter)
+        top.append(icon_button("x", self.close_modal, "關閉", 22, "lightbox-close"))
+        stage = Gtk.Overlay(vexpand=True)
+        status = label("", "lightbox-status", xalign=0.5)
         status.set_halign(CENTER)
         status.set_valign(CENTER)
         status.set_can_target(False)
         stage.add_overlay(status)
-        layout.append(stage)
-        bar = box(H, 6, "viewer-bar", halign=CENTER)
-        # These handlers reach the window through the widget that fired, not
-        # through a captured variable: a window whose own handlers refer to
-        # it is never freed, and each one holds a full-size picture.
-        save = button(icon_text("download", "儲存", 15), None, "viewer-btn")
-        save.connect("clicked", lambda source: self.save_image(message, source.get_root()))
-        share = button(icon_text("forward", "分享", 15), None, "viewer-btn")
-        share.connect("clicked", lambda source: (source.get_root().close(), self.open_forward(message)))
-        bar.append(save)
-        bar.append(button(icon_text("copy", "複製", 15), lambda: self.copy_image(message), "viewer-btn"))
-        bar.append(share)
-        layout.append(bar)
-        viewer.set_child(layout)
-        key = Gtk.EventControllerKey()
-        key.connect("key-pressed", lambda controller, keyval, *_: (controller.get_widget().close(), True)[1] if keyval == Gdk.KEY_Escape else False)
-        viewer.add_controller(key)
+        actions = box(H, 6, "lightbox-bar", halign=CENTER)
+        for name, text, action in (("download", "儲存", "save"), ("copy", "複製", "copy"), ("forward", "分享", "share")):
+            actions.append(button(icon_text(name, text, 15), lambda action=action: self.lightbox_action(action), "lightbox-action"))
+        column.append(top)
+        column.append(stage)
+        column.append(actions)
+        layer.set_child(column)
+        previous = icon_button("back", lambda: self.lightbox_step(-1), "上一張", 26, "lightbox-nav")
+        following = icon_button("chevron", lambda: self.lightbox_step(1), "下一張", 26, "lightbox-nav")
+        for arrow, side in ((previous, START), (following, END)):
+            arrow.set_halign(side)
+            arrow.set_valign(CENTER)
+            layer.add_overlay(arrow)
+        click = Gtk.GestureClick()
+        click.connect("pressed", self.lightbox_pressed)
+        layer.add_controller(click)
+        self.overlay.add_overlay(layer)
+        self.pages.set_can_focus(False)
+        self.modal = layer
+        self.modal_kind = "lightbox"
+        # The state lives here rather than in the handlers above, so that no
+        # handler holds the widgets (and their full-size photos) once closed.
+        self.lightbox = {"slides": slides, "index": -1, "stage": stage, "picture": None, "status": status,
+                         "caption": caption, "counter": counter, "previous": previous, "next": following, "actions": actions}
+        self.show_slide(index)
+        GLib.idle_add(lambda: self.modal is layer and layer.child_focus(Gtk.DirectionType.TAB_FORWARD) and False)
+
+    def show_slide(self, index):
+        viewer = self.lightbox
+        if viewer is None or not 0 <= index < len(viewer["slides"]) or index == viewer["index"]:
+            return
+        viewer["index"] = index
+        slide = viewer["slides"][index]
+        message = slide["message"]
+        total = len(viewer["slides"])
+        viewer["counter"].set_text(f"{index + 1} / {total}")
+        viewer["counter"].set_visible(total > 1)
+        viewer["previous"].set_visible(index > 0)
+        viewer["next"].set_visible(index < total - 1)
+        viewer["caption"].set_text(self.photo_caption(message))
+        viewer["actions"].set_visible("scene" not in slide)
+        # A new picture for every photo: a photo still loading for the one
+        # shown before then lands in a picture that is no longer shown.
+        picture = Gtk.Picture(can_shrink=True)
+        try:
+            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        except AttributeError:
+            pass
+        picture.set_margin_start(88)
+        picture.set_margin_end(88)
+        viewer["picture"] = picture
+        viewer["stage"].set_child(picture)
+        status = viewer["status"]
+        if "scene" in slide:
+            picture.set_paintable(art.texture("scene", slide["scene"], 1096, 800, None))
+            status.set_visible(False)
+            return
         # The small picture from the chat is shown at once and replaced by
         # the full one when it arrives.
         small = self.photos.texture(message.get("id"), True)
         if small is not None:
             picture.set_paintable(small)
-        self.load_image(message, picture, preview=False, done=lambda texture: status.set_visible(False),
-                        failed=lambda: status.set_text("無法載入照片，可能已過期。"))
-        viewer.present()
+        status.set_text("正在載入照片…")
+        status.set_visible(True)
+
+        def done(_texture):
+            if self.lightbox is viewer and viewer["picture"] is picture:
+                status.set_visible(False)
+                self.prefetch_slides(viewer)
+
+        def failed():
+            if self.lightbox is viewer and viewer["picture"] is picture:
+                status.set_text("無法載入照片，可能已過期。")
+                status.set_visible(True)
+        self.load_image(message, picture, preview=False, done=done, failed=failed)
+
+    def prefetch_slides(self, viewer):
+        """Fetches the photos on either side, so stepping to them is instant."""
+        for near in (viewer["index"] + 1, viewer["index"] - 1):
+            if 0 <= near < len(viewer["slides"]) and "scene" not in viewer["slides"][near]:
+                message = viewer["slides"][near]["message"]
+                if self.photos.texture(message.get("id"), False) is None:
+                    self.load_image(message, Gtk.Picture(), preview=False)
+
+    def lightbox_step(self, delta):
+        if self.lightbox is not None:
+            self.show_slide(self.lightbox["index"] + delta)
+
+    def lightbox_action(self, action):
+        if self.lightbox is None:
+            return
+        message = self.lightbox["slides"][self.lightbox["index"]]["message"]
+        if action == "save":
+            self.save_image(message)
+        elif action == "copy":
+            self.copy_image(message)
+        else:
+            self.close_modal()
+            self.open_forward(message)
+
+    def lightbox_pressed(self, gesture, _presses, x, y):
+        """A click on the dark backdrop closes the viewer; one on the photo,
+        a button or the caption does not."""
+        layer = gesture.get_widget()
+        picked = layer.pick(x, y, Gtk.PickFlags.DEFAULT)
+        widget = picked
+        while widget is not None and widget is not layer:
+            if isinstance(widget, (Gtk.Button, Gtk.Label)):
+                return
+            widget = widget.get_parent()
+        picture = self.lightbox["picture"] if self.lightbox else None
+        if picture is not None and picked is picture:
+            found, point = layer.compute_point(picture, Graphene.Point().init(x, y))
+            if found and on_photo(picture, point.x, point.y):
+                return
+        self.close_modal()
+
+    def photo_caption(self, message):
+        if message.get("mine"):
+            sender = self.state.profile.get("name") or "你"
+        else:
+            sender = message.get("sender_name") or self.state.name_of(message.get("sender_id"))
+        stamp = int(message.get("time") or 0)
+        when = time.strftime("%Y/%m/%d %H:%M", time.localtime(stamp / 1000)) if stamp else ""
+        return " · ".join(part for part in (str(sender or ""), when) if part)
 
     def image_data(self, message):
         """The full picture's bytes as LINE delivered them, if at hand."""
@@ -2269,7 +2440,7 @@ class Application(Gtk.Application):
             cell = max(48, (getattr(self, "detail_width", 238) - 36 - 8) // 3)
             for index, name in enumerate(scenes[:3]):
                 tile = Art("scene", name, cell, cell, "media-cell")
-                frame = button(tile, lambda value=index: self.open_lightbox(value), None, "查看照片")
+                frame = button(tile, lambda value=index: self.open_scene(chat, value), None, "查看照片")
                 grid.append(frame)
             content.append(grid)
         else:
@@ -2290,7 +2461,7 @@ class Application(Gtk.Application):
 
     def chat_scenes(self, chat):
         if any(str(m.get("url")) == "demo:collage" for m in self.history_for(chat["id"])):
-            return ["mountain", "trail", "coffee"]
+            return list(DEMO_SCENES)
         return []
 
     def detail_notes(self, content, chat):
@@ -2314,7 +2485,7 @@ class Application(Gtk.Application):
         content.append(self.section_label("收藏一起走過的風景"))
         scenes = self.chat_scenes(chat)
         if scenes:
-            card = button(None, lambda: self.open_lightbox(0), None, "查看照片")
+            card = button(None, lambda: self.open_scene(chat, 0), None, "查看照片")
             frame = box(V, 0, "note-card")
             frame.set_overflow(Gtk.Overflow.HIDDEN)
             frame.append(Art("scene", scenes[0], getattr(self, "detail_width", 238) - 38, 100))
@@ -2390,6 +2561,7 @@ class Application(Gtk.Application):
         self.overlay.remove_overlay(self.modal)
         self.modal = None
         self.modal_kind = ""
+        self.lightbox = None
         self.pages.set_can_focus(True)
 
     def modal_actions(self, primary=None, primary_text="確定", secondary_text="取消", error=False, center=False):
@@ -2458,7 +2630,7 @@ class Application(Gtk.Application):
                 self.take_screenshot()
                 return True
         if self.modal_kind == "lightbox" and keyval in (Gdk.KEY_Left, Gdk.KEY_Right):
-            self.open_lightbox(self.lightbox_index + (1 if keyval == Gdk.KEY_Right else -1))
+            self.lightbox_step(1 if keyval == Gdk.KEY_Right else -1)
             return True
         return False
 
@@ -2910,24 +3082,6 @@ class Application(Gtk.Application):
             self.toast("記事已刪除")
         body = label(f"「{note['title']}」會從這台電腦移除。", "subtle", wrap=True)
         self.open_modal("note-delete", "刪除這則記事？", body, self.modal_actions(delete, "刪除記事"))
-
-    # --------------------------------------------------------------- lightbox
-    def open_lightbox(self, index):
-        scenes = self.chat_scenes(self.current_chat()) if self.current_chat() else []
-        if not scenes:
-            return
-        self.lightbox_index = index % len(scenes)
-        body = box(V, 0)
-        picture = Art("scene", scenes[self.lightbox_index], 548, 400, "r8")
-        picture.set_halign(CENTER)
-        body.append(picture)
-        controls = box(H, 25, halign=CENTER)
-        controls.set_margin_top(18)
-        controls.append(icon_button("back", lambda: self.open_lightbox(self.lightbox_index - 1), "上一張", 20))
-        controls.append(label(f"{self.lightbox_index + 1} / {len(scenes)}", "subtle"))
-        controls.append(icon_button("chevron", lambda: self.open_lightbox(self.lightbox_index + 1), "下一張", 20))
-        body.append(controls)
-        self.open_modal("lightbox", "聊天中的照片 · 離線展示", body, wide=True)
 
     # ------------------------------------------------------------- stickers
     def open_stickers(self):
@@ -3603,6 +3757,8 @@ class Application(Gtk.Application):
     def focus_changed(self, *_):
         if self.window and self.window.is_active():
             self.clear_summary()
+            if self.dock_count:
+                self.show_dock_count(self.dock_count, again=True)
         if self.reading():
             chat_id = self.state.selected
             if self.state.chats.get(chat_id, {}).get("unread"):
@@ -3984,6 +4140,9 @@ class Application(Gtk.Application):
             return
         self.toast_label.set_text(text)
         self.toast_label.add_css_class("error") if error else self.toast_label.remove_css_class("error")
+        if self.toast_label.get_next_sibling() is not None:
+            # Above a dialog or the photo viewer opened after it.
+            self.toast_label.insert_before(self.overlay, None)
         self.toast_label.set_visible(True)
         if self.toast_timer:
             GLib.source_remove(self.toast_timer)
@@ -4164,6 +4323,8 @@ class Application(Gtk.Application):
                 self.check("file card shows the type, the name and the size",
                            card is not None and self.find_css(card, "kind-pdf") is not None
                            and {"散步路線提案.pdf", "檔案大小：2.4 KB"} <= set(self.labels_in(card)))
+                self.check_photo_viewer()
+                self.check_dock_count()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
                 self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
@@ -4255,6 +4416,63 @@ class Application(Gtk.Application):
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
 
+    def check_photo_viewer(self):
+        photo = Path(self.options.smoke_test) / "photo.png"
+        art.texture("scene", "trail", 160, 120, None).save_to_png(str(photo))
+        history = self.state.messages.setdefault(self.smoke_chat, [])
+        now = int(time.time() * 1000)
+        added = [{"id": f"smoke-photo-{n}", "chat_id": self.smoke_chat, "sender_id": "demo-hao", "sender_name": "林子豪",
+                  "kind": "image", "url": "file://" + str(photo), "width": 160, "height": 120, "time": now + n, "status": "received"}
+                 for n in (1, 2)]
+        history += added
+        self.after_message(self.smoke_chat)
+        total = len(self.photo_slides(self.smoke_chat))
+        self.open_viewer(added[0])
+        viewer = self.lightbox
+        self.check("a photo opens over the window, at its place among the chat's photos",
+                   viewer is not None and self.modal_kind == "lightbox" and self.modal.get_parent() is self.overlay
+                   and viewer["counter"].get_text() == f"{total - 1} / {total}" and viewer["previous"].get_visible() and viewer["next"].get_visible()
+                   and viewer["caption"].get_text().startswith("林子豪 · "))
+        self.window_key(None, Gdk.KEY_Right, 0, Gdk.ModifierType(0))
+        self.lightbox_step(1)
+        self.check("下一張 goes to the next photo and stops at the last",
+                   viewer["index"] == total - 1 and viewer["counter"].get_text() == f"{total} / {total}"
+                   and not viewer["next"].get_visible() and viewer["previous"].get_visible())
+        loaded = self.wait_for(lambda: viewer["picture"].get_paintable() is not None and not viewer["status"].get_visible())
+        self.check("the full photo loads in the viewer", loaded)
+        layer = self.modal
+        self.wait_for(lambda: layer.get_width() > 0 and viewer["picture"].get_width() > 0)
+
+        class Press:
+            @staticmethod
+            def get_widget():
+                return layer
+        found, middle = viewer["picture"].compute_point(layer, Graphene.Point().init(viewer["picture"].get_width() / 2, viewer["picture"].get_height() / 2))
+        self.lightbox_pressed(Press, 1, middle.x, middle.y)
+        on_picture = self.modal is layer
+        self.lightbox_pressed(Press, 1, 4, layer.get_height() / 2)
+        self.check("a click on the photo keeps it open; one on the dark backdrop closes it",
+                   found and on_picture and self.modal is None and self.lightbox is None)
+        self.state.messages[self.smoke_chat] = [m for m in history if m not in added]
+        self.after_message(self.smoke_chat)
+
+    def check_dock_count(self):
+        bus = self.get_dbus_connection()
+        sent = []
+        subscription = bus.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None, Gio.DBusSignalFlags.NONE,
+                                            lambda *signal: sent.append(signal[5].unpack())) if bus else 0
+        self.state.chats["demo-family"]["unread"] = int(self.state.chats["demo-family"].get("unread") or 0) + 1
+        self.render_rail()
+        unread = sum(int(chat.get("unread") or 0) for chat in self.state.chats.values() if not self.chat_muted(chat))
+        self.wait_for(lambda: sent)
+        if bus:
+            bus.signal_unsubscribe(subscription)
+        self.check("the dock shows the unread count of 聊天",
+                   unread > 0 and sent and sent[-1][0] == f"application://{self.get_application_id()}.desktop"
+                   and sent[-1][1] == {"count": unread, "count-visible": True})
+        self.state.chats["demo-family"]["unread"] -= 1
+        self.render_rail()
+
     @staticmethod
     def wait_for(predicate, seconds=3):
         deadline = time.monotonic() + seconds
@@ -4324,6 +4542,18 @@ class Application(Gtk.Application):
     def run(self, argv):
         status = super().run(argv)
         return self.exit_status or status
+
+
+def on_photo(picture, x, y):
+    """Whether (x, y) in a Gtk.Picture that fits its photo (CONTAIN) falls
+    on the photo rather than on the empty bands beside it."""
+    paintable = picture.get_paintable()
+    width, height = picture.get_width(), picture.get_height()
+    if paintable is None or width <= 0 or height <= 0:
+        return False
+    ratio = paintable.get_intrinsic_aspect_ratio() or width / height
+    shown_width, shown_height = (height * ratio, height) if width / height > ratio else (width, width / ratio)
+    return abs(x - width / 2) <= shown_width / 2 and abs(y - height / 2) <= shown_height / 2
 
 
 def selected_text(widget):
