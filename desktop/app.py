@@ -208,6 +208,8 @@ class Application(Gtk.Application):
         self.demo_note_hidden = False
         self.dialogs = set()
         self.generation = 0
+        self.profile_timer = 0
+        self.profile_pending = None
         self.smoke = {"checks": [], "mode": self.state.mode}
         self.exit_status = 0
         self.connect("activate", self.activate)
@@ -1181,16 +1183,60 @@ class Application(Gtk.Application):
         status.set_visible(bool(contact.get("status")))
         info.append(status)
         contents.append(info)
-        row = button(contents, None, "chat-row friend" + (" own-profile" if profile else ""), contact.get("name", "好友"))
-        row.set_tooltip_text(None)
         person_id = contact.get("id", "")
-        # LINE PC: one click shows the profile, a double click opens the chat.
-        click = Gtk.GestureClick(button=1)
-        click.connect("released", lambda gesture, n, x, y: self.open_direct(person_id) if n >= 2 and not profile else (self.open_profile(person_id) if n == 1 else None))
-        row.add_controller(click)
+        # The row's own "clicked": a left-click gesture added to a button
+        # never sees the release (the button claims the click), so neither
+        # the single nor the double click used to do anything.
+        row = button(contents, lambda: self.friend_clicked(person_id, profile), "chat-row friend" + (" own-profile" if profile else ""), contact.get("name", "好友"))
+        row.set_tooltip_text(None)
         if not profile:
             self.attach_context(row, lambda: self.friend_menu(contact))
         return row
+
+    def friend_clicked(self, person_id, own=False):
+        """Friends page, as in LINE PC: one click shows the profile card, a
+        double click opens the chat. Your own row only has the card."""
+        if own:
+            self.cancel_card()
+            self.open_profile(person_id)
+            return
+        self.card_click(person_id, lambda: self.open_profile(person_id), lambda: self.open_direct(person_id))
+
+    def group_clicked(self, chat_id):
+        """Friends page: one click shows the group's card, a double click opens its chat."""
+        self.card_click(chat_id, lambda: self.open_group_card(chat_id), lambda: self.open_group_chat(chat_id))
+
+    def card_click(self, key, single, double):
+        """Tells a single click on a friends-page row from a double click.
+
+        The card waits until a second click can no longer come: opened at
+        once, it would cover the list and take the second click."""
+        pending = self.profile_pending if self.profile_timer else None
+        self.cancel_card()
+        if pending == key:
+            double()  # second click on the same row within the double-click time
+            return
+        generation = self.generation
+
+        def show():
+            self.profile_timer = 0
+            if generation == self.generation and self.section == "friends":
+                single()
+            return GLib.SOURCE_REMOVE
+        settings = Gtk.Settings.get_default()
+        delay = settings.get_property("gtk-double-click-time") if settings else 400
+        self.profile_pending = key
+        self.profile_timer = GLib.timeout_add(max(150, int(delay)), show)
+
+    def cancel_card(self):
+        if self.profile_timer:
+            GLib.source_remove(self.profile_timer)
+            self.profile_timer = 0
+
+    def open_group_chat(self, chat_id):
+        if chat_id in self.state.chats:
+            self.close_modal()
+            self.select_chat(chat_id)
 
     def group_row(self, chat):
         contents = box(H, 12)
@@ -1199,11 +1245,10 @@ class Application(Gtk.Application):
         name.set_valign(CENTER)
         name.set_hexpand(True)
         contents.append(name)
-        row = button(contents, None, "chat-row friend", chat.get("name", "群組"))
+        # The row's own "clicked" (see friend_row): a gesture added to the
+        # button never fired, so groups in the friends list did nothing.
+        row = button(contents, lambda chat_id=chat["id"]: self.group_clicked(chat_id), "chat-row friend", chat.get("name", "群組"))
         row.set_tooltip_text(None)
-        click = Gtk.GestureClick(button=1)
-        click.connect("released", lambda gesture, n, x, y: self.select_chat(chat["id"]) if n >= 1 else None)
-        row.add_controller(click)
         return row
 
     def friend_menu(self, contact):
@@ -3493,6 +3538,48 @@ class Application(Gtk.Application):
         card.append(actions)
         self.open_modal("profile", "", card, css="profile-modal")
 
+    def open_group_card(self, chat_id):
+        """Group card in the style of the profile card: picture, name, member
+        count, a few members, and actions to open the chat or the member list."""
+        chat = self.state.chats.get(chat_id)
+        if not chat:
+            return
+        own = self.state.profile.get("id", "")
+        card = box(V, 0, "profile-card")
+        top = Gtk.Overlay()
+        base = box(V, 0)
+        base.append(box(V, 0, "profile-cover"))
+        base.append(box(V, 0, "profile-cover-gap"))
+        top.set_child(base)
+        portrait = chat_avatar(chat, own, 104)
+        portrait.set_halign(CENTER)
+        portrait.set_valign(Gtk.Align.END)
+        portrait.add_css_class("profile-photo")
+        top.add_overlay(portrait)
+        card.append(top)
+        card.append(label(chat.get("name", "群組"), "profile-name", xalign=0.5, wrap=True))
+        count = self.member_count(chat)
+        card.append(label(f"成員 {count}" if count else "群組", "profile-status", xalign=0.5))
+        members = [m for m in self.members_of(chat) if m and m != own][:6]
+        if members:
+            faces = box(H, 6, "group-card-members", halign=CENTER)
+            for member in members:
+                faces.append(person_avatar(member, own, 32))
+            card.append(faces)
+        actions = box(H, 28, "profile-actions", halign=CENTER)
+
+        def action(name, text, callback):
+            item = box(V, 6)
+            circle = box(V, 0, "profile-action-icon", halign=CENTER)
+            circle.append(icon(name, 22))
+            item.append(circle)
+            item.append(label(text, "profile-action-label", xalign=0.5))
+            actions.append(button(item, callback, "profile-action", text))
+        action("chat", "聊天", lambda: self.open_group_chat(chat_id))
+        action("rail-friends", "成員", lambda: self.open_members(chat))
+        card.append(actions)
+        self.open_modal("group-card", "", card, css="profile-modal")
+
     def toggle_favorite(self, person_id, reopen=True):
         try:
             enabled = self.prefs.toggle("favorites", person_id)
@@ -4437,6 +4524,7 @@ class Application(Gtk.Application):
 
     def clear_session(self):
         self.generation += 1
+        self.cancel_card()
         for dialog in list(self.dialogs):
             if isinstance(dialog, Gtk.NativeDialog):
                 dialog.destroy()

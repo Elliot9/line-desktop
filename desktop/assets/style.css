@@ -310,6 +310,7 @@ progressbar.update-progress > trough > progress { min-height: 6px; border-radius
 .profile-name { font-size: 20px; font-weight: 700; margin: 12px 24px 6px; color: #111; }
 .profile-status { font-size: 13px; color: #777; margin: 0 24px; }
 .profile-actions { margin: 26px 0 26px; }
+.group-card-members { margin: 14px 24px 0; }
 .line-window button.profile-action { padding: 4px; border-radius: 8px; }
 .profile-action-icon { min-width: 44px; min-height: 44px; border-radius: 999px; background: #f2f2f2; color: #333; }
 .profile-action-icon > * { margin: 11px; }
