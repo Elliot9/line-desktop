@@ -10,8 +10,9 @@ import uuid
 
 KEEP_ID = "keep"
 KEEP_LIMIT = 1000
-# Messages kept per chat in memory; older ones are loaded from LINE on demand.
-HISTORY_LIMIT = 2000
+# Messages kept per chat in memory (the core keeps as many). Older ones are
+# loaded from LINE on demand, as far back as LINE serves them (14 days).
+HISTORY_LIMIT = 5000
 DEMO_PINNED = ("demo-weekend", "demo-yiting")
 DEMO_FAVORITES = ("demo-yiting", "demo-hao")
 DEMO_KEEP = "記下生活裡的小靈感 ✍️\n想去的地方、突然想到的點子，都放在這裡。"
@@ -120,6 +121,27 @@ class State:
             if count and not message.get("mine") and chat_id != self.selected:
                 chat["unread"] = int(chat.get("unread", 0)) + 1
         return True
+
+
+    def add_older(self, chat_id, messages):
+        """Puts messages from before the chat's history in front of it.
+        Returns how many it did not hold yet; once the chat holds
+        HISTORY_LIMIT messages, older ones are not taken."""
+        history = self.messages.setdefault(chat_id, [])
+        known = {str(m.get("id")) for m in history}
+        fresh = []
+        for message in messages:
+            message_id = str(message.get("id", ""))
+            if message_id and message_id not in known and str(message.get("chat_id", "")) == chat_id:
+                known.add(message_id)
+                fresh.append(message)
+        fresh.sort(key=lambda item: item.get("time", 0))
+        fresh = fresh[max(0, len(fresh) - (HISTORY_LIMIT - len(history))):] if len(history) < HISTORY_LIMIT else []
+        if fresh:
+            history[:0] = fresh
+            if len(history) > len(fresh) and history[len(fresh) - 1].get("time", 0) > history[len(fresh)].get("time", 0):
+                history.sort(key=lambda item: item.get("time", 0))
+        return len(fresh)
 
 
 def media_label(message):

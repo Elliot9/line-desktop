@@ -23,7 +23,7 @@ from . import ui as ui_module
 from . import updater
 from .art import Art, BASIC_EMOJI, MOODS
 from .ipc import Core
-from .model import KEEP_ID, Keep, Notes, Preferences, State, media_label
+from .model import HISTORY_LIMIT, KEEP_ID, Keep, Notes, Preferences, State, media_label
 from .photos import Photos
 from .pictures import Pictures
 from .ui import (H, V, Responsive, box, button, chat_avatar, clear, dot, file_badge, file_size, file_title,
@@ -174,6 +174,10 @@ class Application(Gtk.Application):
         self.list_extending = False
         self.history_limit = HISTORY_PAGE
         self.rendered = None
+        # Per chat, loading messages from before its history:
+        # {"loading": a request is out, "done": LINE has nothing older}.
+        self.older = {}
+        self.history_top = None
         self.notify_times = collections.deque()
         # Notifications on screen: notification id -> chat id ("" for the
         # summary). Taken back as soon as their chat has nothing unread.
@@ -709,6 +713,8 @@ class Application(Gtk.Application):
         vertical = self.history_scroll.get_vadjustment()
         vertical.connect("changed", self.history_resized)
         vertical.connect("value-changed", self.history_scrolled)
+        self.history_scroll.connect("edge-reached", self.history_edge)
+        self.history_scroll.connect("edge-overshot", self.history_edge)
         conversation_layer = Gtk.Overlay()
         conversation_layer.set_child(self.history_scroll)
         self.drag_overlay = label("放開檔案，分享此刻的小美好。", "drag-overlay", xalign=0.5)
@@ -1319,18 +1325,16 @@ class Application(Gtk.Application):
             if response.get("ok"):
                 if replace:
                     self.state.messages[chat_id] = [m for m in self.state.messages.get(chat_id, []) if str(m.get("id", "")).startswith("pending-")]
+                    self.older.pop(chat_id, None)
                 result = response.get("result", {})
-                for message in result.get("messages", []):
+                messages = result.get("messages", [])
+                for message in messages:
                     # History is not news: unread counts come from the core.
                     self.state.add_message(message, count=False)
-                # How far each member has read, including before LINE was
-                # started here: older messages get their 已讀 too.
-                chat = self.state.chats.get(chat_id)
-                if chat is not None and isinstance(result.get("read_by"), dict):
-                    readers = chat.get("read_by") or {}
-                    for reader, at in result["read_by"].items():
-                        readers[reader] = max(int(readers.get(reader, 0) or 0), int(at or 0))
-                    chat["read_by"] = readers
+                if len(messages) < limit:
+                    # LINE gave all it has: there is nothing older to ask for.
+                    self.older.setdefault(chat_id, {"loading": False, "done": False})["done"] = True
+                self.merge_read_by(chat_id, result)
                 if self.state.selected == chat_id:
                     if chat_id in self.state.chats:
                         self.state.chats[chat_id]["unread"] = 0
@@ -1340,6 +1344,97 @@ class Application(Gtk.Application):
             else:
                 self.toast(self.error(response), True)
         self.core.request("messages.list", {"chat_id": chat_id, "limit": limit}, loaded)
+
+    def merge_read_by(self, chat_id, result):
+        """How far each member has read, including before LINE was started
+        here: older messages get their 已讀 too."""
+        chat = self.state.chats.get(chat_id)
+        if chat is not None and isinstance(result.get("read_by"), dict):
+            readers = chat.get("read_by") or {}
+            for reader, at in result["read_by"].items():
+                readers[reader] = max(int(readers.get(reader, 0) or 0), int(at or 0))
+            chat["read_by"] = readers
+
+    def load_older(self):
+        """Asks LINE for the messages before the oldest one held for the open
+        chat, a page at a time; scrolling to the top does this too. LINE
+        serves about the last 14 days, so it ends there."""
+        chat = self.current_chat()
+        if not chat or chat["id"] == KEEP_ID or not self.core or self.message_search:
+            return
+        chat_id = chat["id"]
+        state = self.older.setdefault(chat_id, {"loading": False, "done": False})
+        history = self.history_for(chat_id)
+        oldest = next((m for m in history if not str(m.get("id", "")).startswith("pending-")), None)
+        if state["loading"] or state["done"] or oldest is None:
+            return
+        if len(history) >= HISTORY_LIMIT or int(oldest.get("time") or 0) <= 0:
+            state["done"] = True
+            self.fill_history_top()
+            return
+        state["loading"] = True
+        self.fill_history_top()
+        generation = self.generation
+        # The message at the top now stays at the top once older ones are in.
+        anchor = self.rendered["ids"][0] if self.rendered and self.rendered["chat"] == chat_id and self.rendered["ids"] else None
+
+        def loaded(response):
+            state["loading"] = False
+            if generation != self.generation or self.older.get(chat_id) is not state:
+                return
+            if not response.get("ok"):
+                self.toast(self.error(response), True)
+                if self.state.selected == chat_id:
+                    self.fill_history_top()
+                return
+            result = response.get("result", {})
+            added = self.state.add_older(chat_id, result.get("messages", []))
+            if not added or not result.get("more"):
+                state["done"] = True
+            self.merge_read_by(chat_id, result)
+            if self.state.selected != chat_id:
+                return
+            if added:
+                self.history_limit = len(self.history_for(chat_id))
+                self.render_messages(anchor=anchor, top=True)
+            else:
+                self.fill_history_top()
+        self.core.request("messages.before", {"chat_id": chat_id, "before_id": str(oldest["id"]), "before_time": int(oldest["time"]), "limit": 100}, loaded)
+
+    def history_edge(self, _scrolled, position):
+        """Scrolling to the top of the conversation shows earlier messages:
+        those held but not drawn yet, else the next page from LINE."""
+        if position != Gtk.PositionType.TOP or self.message_search or not self.current_chat():
+            return
+        if self.rendered and self.rendered["hidden"]:
+            self.show_earlier()
+        else:
+            self.load_older()
+
+    def fill_history_top(self):
+        """The top of the conversation: 顯示較早的 for messages held but not
+        drawn, else 載入更早的訊息 while LINE may have more, or that LINE
+        keeps only the last 14 days."""
+        top = self.history_top
+        if top is None:
+            return
+        clear(top)
+        chat = self.current_chat()
+        if not chat or self.message_search:
+            return
+        hidden = self.rendered["hidden"] if self.rendered and self.rendered["chat"] == chat["id"] else 0
+        if hidden:
+            top.append(button(None, self.show_earlier, "history-more", text=f"顯示較早的 {min(hidden, HISTORY_PAGE)} 則訊息"))
+            return
+        if chat["id"] == KEEP_ID or not self.history_for(chat["id"]):
+            return
+        state = self.older.get(chat["id"], {})
+        if state.get("loading"):
+            top.append(label("正在載入較早的訊息…", "history-note", xalign=0.5))
+        elif state.get("done"):
+            top.append(label("電腦上只能看到最近 14 天內的訊息，更早的請在手機上查看。", "history-note", wrap=True, xalign=0.5))
+        else:
+            top.append(button(None, self.load_older, "history-more", text="載入更早的訊息"))
 
     def reload_open_chat(self):
         """Loads the open conversation again once the core accepts requests."""
@@ -1398,9 +1493,10 @@ class Application(Gtk.Application):
     def history_for(self, chat_id):
         return self.state.messages.get(chat_id, [])
 
-    def render_messages(self, anchor=None):
+    def render_messages(self, anchor=None, top=False):
         """Rebuilds the open conversation. anchor is a message id to keep in
-        view instead of jumping to the newest message."""
+        view instead of jumping to the newest message; top puts it near the
+        top of the view (where it was, before earlier messages came in)."""
         clear(self.history)
         self.rendered = None
         chat = self.current_chat()
@@ -1414,12 +1510,10 @@ class Application(Gtk.Application):
         matches = 0
         target = None
         by_id = {m.get("id"): m for m in history}
+        self.history_top = box(V, 0, "history-top", halign=CENTER)
+        self.history.append(self.history_top)
         if not history:
             self.history.append(label("沒有訊息" if chat else "", "empty", xalign=0.5))
-        if hidden:
-            earlier = button(None, self.show_earlier, "history-more", text=f"顯示較早的 {min(hidden, HISTORY_PAGE)} 則訊息")
-            earlier.set_halign(CENTER)
-            self.history.append(earlier)
         flow = {"day": None, "previous": None}
         for message in shown:
             row, bubble, hit = self.add_message_row(message, chat, by_id, query, flow)
@@ -1430,9 +1524,10 @@ class Application(Gtk.Application):
         if chat and not query:
             # What is on screen, so later messages can simply be appended.
             self.rendered = {"chat": chat["id"], "hidden": hidden, "ids": [m.get("id") for m in shown], "flow": flow}
+        self.fill_history_top()
         if target is not None:
             self.stick_bottom = False
-            GLib.idle_add(self.scroll_to, target)
+            GLib.idle_add(self.scroll_to, target, top)
         else:
             GLib.idle_add(self.scroll_bottom)
 
@@ -1490,7 +1585,7 @@ class Application(Gtk.Application):
         hidden = self.rendered["hidden"] if self.rendered else max(0, len(history) - self.history_limit)
         anchor = history[hidden].get("id") if hidden < len(history) else None
         self.history_limit = len(history) - hidden + HISTORY_PAGE
-        self.render_messages(anchor=anchor)
+        self.render_messages(anchor=anchor, top=True)
 
     # ------------------------------------------------------ coalesced redraw
     def queue_render(self, *parts):
@@ -2123,11 +2218,12 @@ class Application(Gtk.Application):
         bottom = adjustment.get_upper() - adjustment.get_page_size()
         self.stick_bottom = adjustment.get_value() >= bottom - 40
 
-    def scroll_to(self, widget):
+    def scroll_to(self, widget, top=False):
         ok, bounds = widget.compute_bounds(self.history)
         if ok:
             adjustment = self.history_scroll.get_vadjustment()
-            adjustment.set_value(max(0, bounds.get_y() - adjustment.get_page_size() / 2))
+            # Near the top, below the day it falls on; else in the middle.
+            adjustment.set_value(max(0, bounds.get_y() - (64 if top else adjustment.get_page_size() / 2)))
         return GLib.SOURCE_REMOVE
 
     # ------------------------------------------------------------ search bar
@@ -4060,6 +4156,7 @@ class Application(Gtk.Application):
             self.context_popover.popdown()
         self.sticker_popover.popdown()
         self.state.clear()
+        self.older = {}
         self.photos.clear()
         self.read_marks.clear()
         self.sticker_waiting.clear()
@@ -4579,6 +4676,7 @@ class Application(Gtk.Application):
                 self.check_photo_viewer()
                 self.check_dock_count()
                 self.check_update_prompt()
+                self.check_older_messages()
                 self.open_search()
                 self.message_search_entry.set_text("咖啡")
                 self.check("conversation search counts matches", self.search_count.get_text() == "1 則結果")
@@ -4726,6 +4824,47 @@ class Application(Gtk.Application):
                    and sent[-1][1] == {"count": unread, "count-visible": True})
         self.state.chats["demo-family"]["unread"] -= 1
         self.render_rail()
+
+    def check_older_messages(self):
+        class Recorder:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, method, params=None, callback=None):
+                self.calls.append((method, params, callback))
+        chat_id = self.state.selected
+        history = self.history_for(chat_id)
+        held = list(history)
+        oldest = history[0]
+        older = [{"id": f"smoke-older-{n}", "chat_id": chat_id, "sender_id": "demo-hao", "sender_name": "林子豪", "kind": "text",
+                  "text": f"兩週前的訊息 {n}", "time": int(oldest["time"]) - (3 - n) * 60000, "status": "received"} for n in (1, 2)]
+        real_core, recorder = self.core, Recorder()
+        self.core = recorder
+        try:
+            self.older[chat_id] = {"loading": False, "done": False}
+            self.render_messages()
+            self.check("the top of a conversation offers 載入更早的訊息", "載入更早的訊息" in self.labels_in(self.history_top))
+            self.history_edge(None, Gtk.PositionType.TOP)
+            method, params, callback = recorder.calls[-1] if recorder.calls else (None, {}, None)
+            self.check("scrolling to the top asks LINE for the messages before the oldest one",
+                       method == "messages.before" and params["before_id"] == oldest["id"] and params["before_time"] == oldest["time"]
+                       and "正在載入較早的訊息…" in self.labels_in(self.history_top))
+            callback({"ok": True, "result": {"messages": older, "more": True, "read_by": {}}})
+            self.check("older messages appear above the conversation, which keeps its place",
+                       [m["id"] for m in self.history_for(chat_id)[:3]] == ["smoke-older-1", "smoke-older-2", oldest["id"]]
+                       and self.rendered["ids"][:2] == ["smoke-older-1", "smoke-older-2"] and not self.stick_bottom
+                       and "載入更早的訊息" in self.labels_in(self.history_top))
+            self.load_older()
+            recorder.calls[-1][2]({"ok": True, "result": {"messages": [], "more": False, "read_by": {}}})
+            self.check("when LINE has nothing older, the top says it keeps 14 days",
+                       any("14 天" in text for text in self.labels_in(self.history_top)) and len(recorder.calls) == 2)
+            self.history_edge(None, Gtk.PositionType.TOP)
+            self.check("nothing more is asked once LINE has nothing older", len(recorder.calls) == 2)
+        finally:
+            self.core = real_core
+            self.state.messages[chat_id] = held
+            self.history_limit = HISTORY_PAGE
+            self.render_messages()
 
     def check_update_prompt(self):
         current = updater.current_version()

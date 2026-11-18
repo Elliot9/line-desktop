@@ -143,6 +143,7 @@
 .drag-overlay { margin: 10px; border: 2px dashed #06c755; border-radius: 12px; background: rgba(240, 255, 245, 0.93); color: #06a046; font-size: 17px; }
 .messages button.history-more { all: unset; font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.28); border-radius: 12px; padding: 4px 12px; margin: 6px 0 14px; }
 .messages button.history-more:hover { background: rgba(0, 0, 0, 0.42); }
+.messages .history-note { font-size: 11px; color: #6f7d74; background: rgba(255, 255, 255, 0.7); border-radius: 12px; padding: 4px 12px; margin: 6px 24px 14px; }
 
 
 /* 有新版本 · both versions, what changed, then download progress */

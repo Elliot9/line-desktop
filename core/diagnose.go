@@ -23,6 +23,21 @@ import (
 )
 
 func rawCall(ctx context.Context, token, method string, args ...any) (map[string]any, error) {
+	data, err := rawRequest(ctx, token, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// rawRequest calls a TalkService method through the Chrome gateway, signed
+// like the library's own calls, for methods the library does not offer.
+// It returns the response body once LINE answered with code 0.
+func rawRequest(ctx context.Context, token, method string, args ...any) ([]byte, error) {
 	url := line.BaseURL + "/TalkService/" + method
 	body := []byte("[]")
 	if len(args) > 0 {
@@ -55,17 +70,19 @@ func rawCall(ctx context.Context, token, method string, args ...any) (map[string
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s: HTTP %d: %w", method, resp.StatusCode, &line.HTTPError{StatusCode: resp.StatusCode})
 	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
+	var status struct {
+		Code    json.Number `json:"code"`
+		Message string      `json:"message"`
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
 		return nil, err
 	}
-	if code, ok := out["code"].(float64); ok && code != 0 {
-		message, _ := out["message"].(string)
-		return nil, fmt.Errorf("%s: code %v %s", method, code, message)
+	if status.Code != "" && status.Code != "0" {
+		return nil, fmt.Errorf("%s: code %s %s", method, status.Code, status.Message)
 	}
-	return out, nil
+	return data, nil
 }
 
 // shape summarises the values a field takes across records, hiding strings.
@@ -518,6 +535,84 @@ func diagnoseReadRange(ctx context.Context, store sessionStore) error {
 		fmt.Printf("  result fields %v; entry fields %v; other members with a range: %d; chats whose own last message is covered: %d of %d\n",
 			resultKeys, entryKeys, readers, covered, len(ownLast))
 		break
+	}
+	return nil
+}
+
+// diagnoseHistory (`line-core --diagnose-history`) pages back through the
+// most recent chats the way the UI does when scrolling up (messages.list,
+// then messages.before) and prints, per chat, how many messages LINE served,
+// how old the oldest was and how many could not be decrypted. Read only:
+// nothing is sent, marked read or refreshed; no names, IDs or text.
+func diagnoseHistory(ctx context.Context, store sessionStore) error {
+	saved, err := store.Load(ctx)
+	if err != nil || saved == nil {
+		return fmt.Errorf("no saved login: %v", err)
+	}
+	crypto, err := e2ee.NewManager()
+	if err == nil {
+		err = crypto.LoadMyKeyFromExportedMap(saved.Keys)
+	}
+	if err != nil {
+		return fmt.Errorf("own keys unavailable: %v", err)
+	}
+	defer crypto.Close()
+	b := &backend{ctx: ctx, session: saved, crypto: crypto, messages: map[string][]message{}, seen: map[string]struct{}{}}
+	boxes, err := apiClient(ctx, saved.AccessToken).GetMessageBoxes(line.MessageBoxesOptions{ActiveOnly: true, MessageBoxCountLimit: 10, LastMessagesPerMessageBoxCount: 1})
+	if err != nil {
+		return fmt.Errorf("getMessageBoxes: %s", midPattern.ReplaceAllString(err.Error(), "<mid>"))
+	}
+	stamp := func(ms int64) string { return time.UnixMilli(ms).Format("2006-01-02 15:04") }
+	now := time.Now()
+	fmt.Printf("now %s; 14 days ago %s\n", stamp(now.UnixMilli()), stamp(now.Add(-14*24*time.Hour).UnixMilli()))
+	for index, box := range boxes.MessageBoxes {
+		if box.ID == "" {
+			continue
+		}
+		kind := map[string]string{"u": "direct", "c": "group", "r": "room"}[strings.ToLower(box.ID[:1])]
+		list, err := b.listMessages(box.ID, 50)
+		if err != nil {
+			fmt.Printf("chat %d (%s): messages.list: %s\n", index+1, kind, midPattern.ReplaceAllString(err.Error(), "<mid>"))
+			continue
+		}
+		held, pages, stop := list, 0, ""
+		if len(held) < 50 {
+			stop = "fewer than 50 recent messages"
+		}
+		for stop == "" && pages < 40 {
+			oldest := held[0]
+			older, err := b.olderMessages(box.ID, oldest.ID, oldest.Time, 100)
+			if err != nil {
+				stop = "error: " + midPattern.ReplaceAllString(err.Error(), "<mid>")
+				break
+			}
+			pages++
+			if len(older) == 0 {
+				stop = "nothing older"
+				break
+			}
+			if older[len(older)-1].Time > oldest.Time {
+				stop = "a page was not older"
+				break
+			}
+			held = append(older, held...)
+			time.Sleep(250 * time.Millisecond)
+		}
+		if stop == "" {
+			stop = "page limit"
+		}
+		undecrypted := 0
+		for _, m := range held {
+			if m.Kind == "system" && strings.HasPrefix(m.Text, "無法解密") {
+				undecrypted++
+			}
+		}
+		oldest := "-"
+		if len(held) > 0 {
+			oldest = stamp(held[0].Time)
+		}
+		fmt.Printf("chat %d (%s): %d messages, %d older pages; oldest %s; not decrypted %d; core holds %d; stopped: %s\n",
+			index+1, kind, len(held), pages, oldest, undecrypted, len(b.messages[box.ID]), stop)
 	}
 	return nil
 }
